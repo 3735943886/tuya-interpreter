@@ -1,7 +1,7 @@
 # Portable Tuya rule engine
 
 The complete production `TuyaDriver` executes in Rust. Python transports JSON
-through a two-function C ABI and dispatches explicitly registered Python plugins.
+through a two-function C ABI without conversion callbacks.
 There is no Python conversion fallback and no Python interpreter in the Rust library.
 The original implementation is frozen under `tests/reference/` for oracle tooling.
 
@@ -11,13 +11,13 @@ The original implementation is frozen under `tests/reference/` for oracle toolin
    category tables, entity specs, DP candidates, units, maps, feature bits, layouts and quirks.
 2. **The Rust core is shared and does no I/O.** It is an interpreter plus primitives that do not depend on any
    device: DP types (validate, scale, invert), Tuya codecs (`value_convert` strategies, electricity, HSV), the
-   expression language, the cover motion tracker, the driver state machine and the il-mqtt wire mapping. It reads no
+   expression language, the cover motion tracker, and the driver state machine. It reads no
    files, network or clock: hosts read rule files (and fetch anything else) and pass the decoded JSON.
 3. **Bindings are thin.** A binding moves JSON across two C functions; there are no plugin callbacks. The Python
    package is such a binding. A JavaScript or other binding needs the same two functions (or
    the WebAssembly build, below) and no Tuya knowledge.
 4. **Spec changes are rule layers.** A new DP code for a role, a new category, a new enum word, a new role, action,
-   property or whole platform is a JSON file under `TUYA_ENGINE_RULES` (see `tests/test_specs.py`). Only a new
+   property or whole platform is a decoded JSON rule layer supplied by the host (see `tests/test_specs.py`). Only a new
    *primitive* (a codec byte layout, an expression operation) needs an engine release.
 
 ## The rule pack
@@ -87,7 +87,7 @@ A layout row is `{"name", "grouped", "when", "definition", "read", "write", "wri
 - `name` is an expression; with `grouped: false` it is not prefixed with the group's name;
 - each `definition` member is an expression, and null leaves the member out;
 - `read` computes the value from `state` (and `values`, `definition`); a `select` value outside its options is
-  unknown and numbers are canonical (il-mqtt);
+  unknown and numbers are canonical IL values;
 - `write` computes `{action, args}` for the entity's actions from the written `value`;
 - `assume` reads with some roles' DPs set (`{"switch": true}` shows a mode while off).
 
@@ -150,14 +150,10 @@ or `{"source": name, "rules": object}` to name it in reports), validates the res
 returns `{rules, sources, warnings}`; with `tolerant` a layer that would make the rules invalid is reported and left
 out.
 
-The engine reads no files. The Python binding's `load_rules(paths)` reads them: the bundled directory, then `paths`;
-directories are non-recursive; files from all locations are applied in filename byte order (equal names keep the
-location order); hidden files, `_` files and `schema.json` are excluded and `zz_settings.json` follows the same
-order. `load_rules_tolerant` also reports a file that does not parse.
-
-`TUYA_ENGINE_RULES` supplies additional file/directory paths (OS path separator) over the bundled pack and
-`TUYA_ENGINE_LIBRARY` another library; environment-selected rules are cached until restart. Explicit
-`load_rules(paths)` returns an independent set for `TuyaDriver(..., rules=...)` and `Hub.reload(..., rules=...)`.
+Neither engine nor bindings load rule files. Hosts decode and order layers, then call
+`merge_rules(layers, base=pack, tolerant=False)` in Python or `op: merge_rules` through the ABI.
+Python `TuyaDriver(device, rules=pack)` requires an explicit pack. `TUYA_ENGINE_RULES` is no longer supported.
+`TUYA_ENGINE_LIBRARY` selects the native library used by the Python binding.
 
 ## C ABI
 
@@ -187,8 +183,6 @@ different contents. The registry caches rules, never device state.
 | `settings` | `driver` | settings block |
 | `check` | `descriptor`, `state`, `prop`, `value` | `{accept}` or `{reject, reason}` |
 | `merge` | `mappings` | merged override blocks |
-| `hub` | `action` (below), `topics` | many devices behind one producer |
-| `il` | `action`, `topics` (`prefix`, `source`) and the action's fields | the il-mqtt wire mapping (below) |
 | `install_rules`, `merge_rules` | see above | |
 | `classify`, `read`, `write`, `on_update`, `unused`, `quirk_schema`, `status_quirk`, `device_info`, `adapter_*`, `strategy_read`, `strategy_write` | plan / schema inputs | introspection for golden tests |
 
@@ -200,27 +194,17 @@ Input/output tags are snake_case: `connected`, `disconnected`, `message`, `comma
 `value`, `absent`, `event`, `send_message`, `reject`, `set_timer`, `cancel_timer`, `settings_changed`.
 `message.json` is the flat DP map with optional `t`.
 
-The `il` actions: `actions` (`device`, `outputs` -> host actions: `publish {topic, payload, retain, qos}`,
-`schedule`, `unschedule`, `bridge {action, dps}`, `save_settings`), `clear` (`device`, `props`, `descriptor`),
-`presence` (`online`), `topics` (`device`, `prop`), `parse_set` (`topic`), `encode` (`value`), `decode` (`type`,
-`payload`) and `usable_id` (`device`).
-
-The `hub` actions keep no state of their own; the host keeps each device's driver JSON and passes the one concerned:
-`adopt` (`old`, `new` from `create`, `seed`, `reload`: what replacing a device publishes; with `reload` an unchanged
-driver is `kept` and the old values are replayed), `remove` (`old`), `input` (`driver`, a bridge `input` or timer,
-`retained`) and `write` (`driver`, `prop`, `payload`: an il write). Each returns the updated `driver` and the host
-`actions`, including `bridge` `get` requests.
-
 ## Another language
 
-A binding loads the library (or the WebAssembly module), and for each device keeps the driver JSON: `create`, then
-`{"op": "hub", "action": "adopt"}` once and `"input"` / `"write"` per message, executing the host actions they return. Device registry, timers, rule files and the MQTT connection are the host's:
-it decodes rule files and calls `merge_rules`. Built for `wasm32-unknown-unknown` the engine imports nothing; the host
-writes each request into a `tuya_engine_alloc` buffer.
+A binding loads the library or WebAssembly module, registers decoded rules, and keeps one driver JSON per device.
+Call `create`, then `handle` with `input` and an explicit `now`. Inputs and outputs follow the IL driver contract;
+there are no MQTT topics, payload encoders, producer actions, or bridge orchestration operations.
+`send_message` carries Tuya set DPS as data; the host sends them through its chosen transport.
+The host also owns the device registry, clocks, timers, rule files, settings storage and transport adapters.
 
-[`bindings/js/engine.mjs`](../bindings/js/engine.mjs) is such a binding for JavaScript (about 60 lines);
-`node bindings/js/smoke.mjs` drives a device with the bundled rule pack, and CI runs it against the WebAssembly
-build.
+[`bindings/js/engine.mjs`](../bindings/js/engine.mjs) provides `Driver.handle(now, input)`,
+`describe(now, seed)`, `carry(old)` and `settingsBlock()` over WebAssembly, without reading a clock.
+`node bindings/js/smoke.mjs` verifies both directions using host-loaded rules and explicit time.
 
 ## Build, packaging and validation
 
@@ -242,7 +226,7 @@ ARM64, x86 and x64; macOS on ARM64 and x64; Windows on ARM64, x86 and x64.
 Linux libraries are cross-compiled with cargo-zigbuild, then bundled and repaired
 inside manylinux/musllinux containers. ARMv7 container tests use QEMU. Windows
 and macOS build for an explicit Rust target so the library matches the wheel.
-Each installed wheel runs the native driver and rule-loader tests; the separate
+Each installed wheel runs the native driver and rule-composition tests; the separate
 source test job runs the full suite. A source distribution is built once.
 
 Push a version tag such as `v0.4.0` to build, test and publish all artifacts to PyPI

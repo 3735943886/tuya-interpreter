@@ -4,6 +4,7 @@ import pathlib
 
 import pytest
 from helpers import curtain, fn, light, strat
+from rule_data import rules
 
 from tuya2ildevice import (
     Absent,
@@ -25,7 +26,7 @@ needs_spec = pytest.mark.skipif(not ILDEVICE.is_dir(), reason=f"no ildevice chec
 
 
 def test_light_realtime_and_commands():
-    d = TuyaDriver(light())
+    d = TuyaDriver(light(), rules=rules())
     props = d.descriptor["props"]
     assert d.descriptor["kind"] == "light"
     assert props["switch_led"]["role"] == "on" and props["brightness"]["max"] == 100
@@ -44,7 +45,7 @@ def test_light_realtime_and_commands():
 
 
 def test_cover_position_and_triggers():
-    d = TuyaDriver(curtain())
+    d = TuyaDriver(curtain(), rules=rules())
     p = d.descriptor["props"]
     assert d.descriptor["kind"] == "cover" and p["position"]["rw"] and {"open", "close", "stop"} <= set(p)
     d.handle(0, Connected())
@@ -55,14 +56,14 @@ def test_cover_position_and_triggers():
     assert out.json == {"dps": {"2": 100}}         # set_position wins over the instruction dp, as in core
     assert d.handle(3, Command("position", 70))[0].json == {"dps": {"2": 70}}
     inv = TuyaDriver(curtain(), overrides={"cur1": {"remap": {"percent_state": {"invert": True},
-                                                              "percent_control": {"invert": True}}}})
+                                                              "percent_control": {"invert": True}}}}, rules=rules())
     inv.handle(0, Connected())
     assert Value("position", 70) in inv.handle(1, Message("active", {"3": 30}))      # the other way: asked for
     assert inv.handle(2, Command("position", 70))[0].json == {"dps": {"2": 30}}
 
 
 def test_unavailable_when_disconnected_and_absent_on_drop():
-    d = TuyaDriver(curtain())
+    d = TuyaDriver(curtain(), rules=rules())
     assert d.handle(0, Command("position", 10))[0] == Reject("position", "unavailable", "device link is down")
     d.handle(0, Connected())
     d.handle(1, Message("state", {"3": 30}))
@@ -71,7 +72,7 @@ def test_unavailable_when_disconnected_and_absent_on_drop():
 
 
 def test_command_checks_before_link():
-    d = TuyaDriver(curtain())
+    d = TuyaDriver(curtain(), rules=rules())
     assert d.handle(0, Command("nope", 1))[0].code == "unknown_property"
     assert d.handle(0, Command("available", True))[0].code == "read_only"
 
@@ -80,7 +81,7 @@ def test_delta_and_event_only_on_active():
     f = {"add_ele": {"code": "add_ele", "type": "Integer", "values": json.dumps({"min": 0, "max": 50000, "scale": 3, "step": 1}), "report_type": "sum"}}
     dev = {"id": "m", "category": "cz", "product_id": "p", "name": "Plug", "function": {}, "status_range": f, "status": {},
            "local_strategy": strat({"17": ("add_ele", "Integer")})}
-    d = TuyaDriver(dev)
+    d = TuyaDriver(dev, rules=rules())
     assert d.descriptor["props"]["add_ele"]["series"] == "counter"
     d.handle(0, Connected())
     assert Value("add_ele", 0) in d.handle(1, Message("state", {"17": 84}))          # readback never accumulates
@@ -92,7 +93,7 @@ def test_event_fires_on_active_only():
     f = {"switch_mode1": fn("switch_mode1", "Enum", range=["click", "double_click", "press"])}
     dev = {"id": "b", "category": "wxkg", "product_id": "p", "name": "Btn", "function": {}, "status_range": f, "status": {},
            "local_strategy": strat({"1": ("switch_mode1", "Enum")})}
-    d = TuyaDriver(dev)
+    d = TuyaDriver(dev, rules=rules())
     assert d.descriptor["props"]["switch_mode1"] == {"type": "event", "options": ["click", "double_click", "press"],
                                                      "src": "switch_mode1", "class": "button"}
     d.handle(0, Connected())
@@ -128,7 +129,7 @@ def test_every_core_fixture_yields_a_valid_descriptor():
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(SCHEMA.read_text())
     for code in fixtures.all_codes():
-        d = TuyaDriver(fixtures.load(code))
+        d = TuyaDriver(fixtures.load(code), rules=rules())
         jsonschema.validate(d.descriptor, schema)
         assert "local_key" not in json.dumps(d.descriptor)
 
@@ -138,7 +139,7 @@ def test_a_malformed_colour_is_rejected_not_raised():
     import fixtures
     seen = 0
     for code in fixtures.all_codes():
-        d = TuyaDriver(fixtures.load(code))
+        d = TuyaDriver(fixtures.load(code), rules=rules())
         if "color" not in d.descriptor["props"]:
             continue
         seen += 1
@@ -156,8 +157,8 @@ def test_unused_dps_get_properties_by_type():
     dev = {"id": "x", "category": "zz", "product_id": "p", "name": "X", "function": f, "status_range": sr, "status": {},
            "local_strategy": strat({"1": ("switch_1", "Boolean"), "7": ("countdown_1", "Integer"), "9": ("mystery", "Enum"),
                                     "10": ("cycle_time", "String"), "11": ("fault", "Bitmap"), "12": ("temp_x", "Integer")})}
-    assert "mystery" not in TuyaDriver(dev).descriptor["props"]           # off by default: core creates no entity for it
-    d = TuyaDriver(dev, expose_unused=True)
+    assert "mystery" not in TuyaDriver(dev, rules=rules()).descriptor["props"]           # off by default: core creates no entity for it
+    d = TuyaDriver(dev, expose_unused=True, rules=rules())
     p = d.descriptor["props"]
     assert p["mystery"] == {"type": "select", "rw": True, "options": ["a", "b"], "label": "Mystery", "category": "config", "src": "mystery"}
     assert p["countdown_1"]["step"] == 1 and isinstance(p["countdown_1"]["step"], int) and p["countdown_1"]["unit"] == "s"
@@ -186,7 +187,7 @@ def test_override_props_device_and_precedence():
     ovr = {"prod1": {"props": {"countdown_1": {"label": "Timer", "category": None, "unit": "min"}, "cycle_time": {"hide": True}},
                      "device": {"model": "X1"}},
            "d1": {"props": {"switch_1": {"rw": False, "class": "switch"}}}}
-    d = TuyaDriver(_kg(), overrides=ovr, expose_unused=True)
+    d = TuyaDriver(_kg(), overrides=ovr, expose_unused=True, rules=rules())
     p = d.descriptor["props"]
     assert p["countdown_1"]["label"] == "Timer" and p["countdown_1"]["unit"] == "min" and "category" not in p["countdown_1"]
     assert "cycle_time" not in p and d.descriptor["model"] == "X1"
@@ -202,14 +203,14 @@ def test_override_dp_definition_is_classified_and_remove_hides_fallback():
     ovr = {"prod1": {"dp": {"104": {"code": "percent_control", "type": "Integer",
                                     "values": {"min": 0, "max": 100, "scale": 0, "step": 1, "unit": "%"}}},
                      "remove": ["cycle_time"]}}
-    d = TuyaDriver(dev, overrides=ovr, expose_unused=True)
+    d = TuyaDriver(dev, overrides=ovr, expose_unused=True, rules=rules())
     assert "cycle_time" not in d.descriptor["props"] and "percent_control" in d.descriptor["props"]
     d.handle(0, Connected())
     outs = d.handle(1, Message("state", {"104": 40}))
     assert Value("percent_control", 40) in outs
     assert d.handle(2, Command("percent_control", 60))[0].json == {"dps": {"104": 60}}
     # redefining an existing dp id points it at the new code
-    d2 = TuyaDriver(dev, expose_unused=True, overrides={"d1": {"dp": {"7": {"code": "renamed", "type": "Integer", "values": {"min": 0, "max": 9, "scale": 0, "step": 1}}}}})
+    d2 = TuyaDriver(dev, expose_unused=True, overrides={"d1": {"dp": {"7": {"code": "renamed", "type": "Integer", "values": {"min": 0, "max": 9, "scale": 0, "step": 1}}}}}, rules=rules())
     assert "renamed" in d2.descriptor["props"] and "countdown_1" not in d2.descriptor["props"]
 
 
@@ -218,7 +219,7 @@ def test_override_errors_are_loud():
                 {"prod1": {"props": {"switch_1": {"unit": "s"}}}}, {"prod1": {"props": {"switch_1": {"rw": True}}}},
                 {"prod1": {"dp": {"9": {"code": "a", "type": "Nonsense"}}}}):
         with pytest.raises(OverrideError):
-            TuyaDriver(_kg(), overrides=bad)
+            TuyaDriver(_kg(), overrides=bad, rules=rules())
 
 
 def test_merge():
@@ -236,7 +237,7 @@ def _motion(outs):
 
 def test_cover_motion_builtin():
     cfg = {"cur1": {"converters": {"cover_motion": {"invert": False, "settle": 5}}}}
-    d = TuyaDriver(curtain(), overrides=cfg)
+    d = TuyaDriver(curtain(), overrides=cfg, rules=rules())
     assert d.descriptor["props"]["cover_state"] == {"type": "select", "role": "cover_state",
                                                     "options": ["open", "closed", "opening", "closing", "stopped"]}
     d.handle(0, Connected())
@@ -257,14 +258,14 @@ def test_cover_motion_builtin():
 
 
 def test_cover_motion_follows_engine_position_by_default():
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}})
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
     d.handle(0, Connected())
     assert _motion(d.handle(1, Message("state", {"3": 100}))) == ["open"]          # raw 100 = open, as the position
     assert _motion(d.handle(2, Message("active", {"2": 0}))) == ["closing"]        # raw target 0 = closed
 
 
 def test_a_live_passive_report_that_changes_a_value_is_a_push():
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}})
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"1": "stop", "2": 50, "3": 50}))
     assert _motion(d.handle(2, Message("passive", {"2": 50, "3": 50}))) == []      # a readback: nothing moved
@@ -276,7 +277,7 @@ def test_a_live_passive_report_that_changes_a_value_is_a_push():
 def test_the_bridges_merged_state_copy_does_not_settle_a_move():
     """rustuya-bridge publishes each report on `passive` (or `active`) and again on `state`, its merged view: the copy
     right behind it changes nothing, so the move goes on until the position arrives (a trace from a real curtain)."""
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}})
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"1": "close", "2": 10, "3": 10}))
     got = [_motion(d.handle(i + 2, Message(ch, m))) for i, (ch, m) in enumerate([
@@ -296,7 +297,7 @@ def test_a_declarative_converter_counts_ticks_and_replaces_a_property():
             "update": [{"set": "state.n", "value": {"op": "add", "args": [count, 1]}},
                        {"emit": "updates", "value": count}, {"timer": "tick", "after": 10}],
             "timer": [{"emit": "updates", "value": 100}]}
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": conv}}})
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": conv}}}, rules=rules())
     assert d.descriptor["props"]["position"] == {"type": "number", "role": "position"}       # replaces the table's
     d.handle(0, Connected())
     outs = d.handle(1, Message("state", {"3": 10}))
@@ -304,12 +305,12 @@ def test_a_declarative_converter_counts_ticks_and_replaces_a_property():
     assert d.handle(2, Timer("c0:tick")) == [Value("updates", 100)]
     assert d.handle(3, Timer("c9:x")) == [] and d.handle(3, Timer("junk")) == []
     with pytest.raises(OverrideError):
-        TuyaDriver(curtain(), overrides={"cur1": {"converters": {"nope": {}}}})
+        TuyaDriver(curtain(), overrides={"cur1": {"converters": {"nope": {}}}}, rules=rules())
     with pytest.raises(OverrideError):                                  # writable needs a write program
         TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": {
-            "props": {"x": {"type": "number", "rw": True}}}}}})
+            "props": {"x": {"type": "number", "rw": True}}}}}}, rules=rules())
     hidden = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": conv},
-                                                       "props": {"updates": {"hide": True}}}})
+                                                       "props": {"updates": {"hide": True}}}}, rules=rules())
     hidden.handle(0, Connected())
     assert Value("updates", 1) not in hidden.handle(1, Message("state", {"3": 10}))
 
@@ -320,7 +321,7 @@ def _with_dpmap(code, **kw):
     import fixtures
     dev = fixtures.load(code)
     dpmap = {str(i + 1): c for i, c in enumerate(dev["status"])}
-    d = TuyaDriver(dev, dpmap=dpmap, **kw)
+    d = TuyaDriver(dev, dpmap=dpmap, **kw, rules=rules())
     d.handle(0, Connected())
     return d, {c: i for i, c in dpmap.items()}
 
@@ -341,7 +342,7 @@ def test_alarm_panel_states_and_arming():
     assert vals(d.handle(4, Message("state", {m: "home"})))["alarm_state"] == "armed_home"
     assert vals(d.handle(5, Message("active", {ids["master_state"]: "alarm", ids["alarm_msg"]: ""})))["alarm_state"] == "triggered"
     import fixtures
-    assert "disarm" not in TuyaDriver(fixtures.load("mal_gyitctrjj1kefxp2")).descriptor["props"]         # S-1
+    assert "disarm" not in TuyaDriver(fixtures.load("mal_gyitctrjj1kefxp2"), rules=rules()).descriptor["props"]         # S-1
 
 
 def test_robot_vacuum_state_and_commands():
@@ -374,4 +375,4 @@ def test_after_preload_driving_a_device_reads_no_file(monkeypatch):
     monkeypatch.setattr(pathlib.Path, "read_text", no_io)
     monkeypatch.setattr(pathlib.Path, "open", no_io)
     for rec in records:
-        TuyaDriver(rec, allow_hazardous=True)
+        TuyaDriver(rec, allow_hazardous=True, rules=rules())

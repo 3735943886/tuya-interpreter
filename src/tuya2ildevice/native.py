@@ -1,4 +1,4 @@
-"""C ABI transport, and the rule files read for the engine (which reads none itself); no conversion rules."""
+"""Native library loading and JSON C ABI transport; no rule-file or device I/O."""
 from __future__ import annotations
 
 import ctypes
@@ -28,65 +28,6 @@ def library():
     return lib
 
 
-def rule_paths(paths=(), *, bundled_path=None):
-    """The bundled rule directory, then `paths`."""
-    bundled = Path(__file__).parent / 'rules'
-    checkout = Path(__file__).resolve().parents[2] / 'rules'
-    location = bundled_path or (bundled if bundled.is_dir() else checkout)
-    return [Path(location), *[Path(p) for p in paths]]
-
-
-def rule_files(locations):
-    """Every rule file of `locations` (a file, or a directory's visible `*.json` but `schema.json`, not recursing), in
-    filename byte order; equal names keep the location order."""
-    files = []
-    for location in map(Path, locations):
-        if location.is_file():
-            files.append(location)
-        elif location.is_dir():
-            files += [p for p in location.iterdir()
-                      if p.is_file() and p.suffix == '.json' and p.name != 'schema.json' and p.name[0] not in '._']
-    return sorted(files, key=lambda p: os.fsencode(p.name))
-
-
-def merge_rule_files(locations, *, tolerant=False):
-    """Read the rule files of `locations` and merge them in the engine: `{rules, sources, warnings}`. With `tolerant`,
-    a file that cannot be read or would make the rules invalid is reported in `warnings` and left out."""
-    files = rule_files(locations)
-    layers, warnings = [], []
-    for path in files:
-        try:
-            layers.append({'source': str(path), 'rules': json.loads(path.read_text(encoding='utf-8'))})
-        except (OSError, ValueError) as error:
-            if not tolerant:
-                raise ValueError(f'{path}: {error}') from error
-            warnings.append(f'{path.name}: {error}')
-    result = _call({'op': 'merge_rules', 'layers': layers, 'tolerant': tolerant})
-    names = {str(p): p.name for p in files}
-
-    def short(warning):
-        source, _, message = warning.partition(': ')
-        return f'{names.get(source, source)}: {message}'
-    result['warnings'] = warnings + [short(w) for w in result['warnings']]
-    return result
-
-
-def load_rules(paths=(), *, bundled_path=None):
-    """The bundled rules with the rule files of `paths` over them."""
-    return merge_rule_files(rule_paths(paths, bundled_path=bundled_path))['rules']
-
-
-def load_rules_tolerant(paths=(), *, bundled_path=None):
-    """Like `load_rules`, but a file that does not load is left out: `{rules, sources, warnings}`."""
-    return merge_rule_files(rule_paths(paths, bundled_path=bundled_path), tolerant=True)
-
-
-@functools.cache
-def rules():
-    paths = [p for p in os.environ.get('TUYA_ENGINE_RULES', '').split(os.pathsep) if p]
-    return load_rules(paths)
-
-
 def _call(request):
     lib = library()
     pointer = lib.tuya_engine_eval(json.dumps(request, ensure_ascii=False, allow_nan=False).encode())
@@ -107,15 +48,16 @@ def register_rules(pack):
     return identifier
 
 
-@functools.cache
-def rule_id():
-    return register_rules(rules())
-
-
 def call(op, **payload):
-    return _call({'op': op, 'rules_id': rule_id(), **payload})
+    """Evaluate an operation using explicit request data; never load rules implicitly."""
+    return _call({'op': op, **payload})
+
+
+def merge_rules(layers, *, base=None, tolerant=False):
+    """Compose decoded rule layers in caller order. File loading and ordering belong to the host."""
+    return call('merge_rules', layers=list(layers), tolerant=tolerant, **({'base': base} if base is not None else {}))
 
 
 def preload():
+    """Load only the native library. Rule data is supplied by the caller."""
     library()
-    rule_id()

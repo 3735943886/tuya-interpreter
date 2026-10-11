@@ -1,20 +1,15 @@
-"""A cover's settings (`cover` block): the device's switches, what each does, motion state on top, and the Hub
-reporting what is written through IL (`SaveSettings`) for the host to keep."""
-import logging
+"""A cover's settings (`cover` block): the device's switches, what each does, motion state on top, and settings changes returned as data for the host to keep."""
 
 import pytest
 from helpers import curtain, fn, strat
+from rule_data import rules
 
 from tuya2ildevice import (
-    BridgeCommand,
     Command,
     Connected,
     Disconnected,
-    Hub,
     Message,
     OverrideError,
-    Publish,
-    SaveSettings,
     SendMessage,
     SettingsChanged,
     TuyaDriver,
@@ -54,7 +49,7 @@ def sent(outs):
 
 def drive(device, block=None, **kw):
     d = TuyaDriver(device, overrides={device["id"]: {"cover": block}} if block is not None else None,
-                   device_settings=True, **kw)
+                   device_settings=True, **kw, rules=rules())
     d.handle(0, Connected())
     return d
 
@@ -67,7 +62,7 @@ def drive(device, block=None, **kw):
     (CONTROL_ONLY, {"cover_invert_control", "cover_state_source"}),
 ])
 def test_a_switch_is_offered_only_where_it_changes_something(device, expected):
-    desc = TuyaDriver(device, device_settings=True).descriptor
+    desc = TuyaDriver(device, device_settings=True, rules=rules()).descriptor
     assert switches(desc) == expected
     for k in expected:
         assert desc["props"][k]["type"] == ("select" if k == "cover_state_source" else "binary") and desc["props"][k]["rw"] and desc["props"][k]["category"] == "config"
@@ -76,21 +71,21 @@ def test_a_switch_is_offered_only_where_it_changes_something(device, expected):
 
 
 def test_no_switch_without_device_settings_and_read_only_for_a_hazardous_cover():
-    props = TuyaDriver(curtain()).descriptor["props"]
+    props = TuyaDriver(curtain(), rules=rules()).descriptor["props"]
     assert not [p for p in props if p.startswith("cover_")]              # no motion inferred unless a block asks
-    assert "cover_state" in TuyaDriver(curtain(), overrides={"p": {"cover": {"infer_motion": True}}}).descriptor["props"]
+    assert "cover_state" in TuyaDriver(curtain(), overrides={"p": {"cover": {"infer_motion": True}}}, rules=rules()).descriptor["props"]
     garage = cover(category="ckmkzq", fns=[("switch_1", "Boolean", {})], status=[("doorcontact_state", "Boolean", {})])
-    props = TuyaDriver(garage, device_settings=True).descriptor["props"]
+    props = TuyaDriver(garage, device_settings=True, rules=rules()).descriptor["props"]
     assert "cover_invert_control" in props and "rw" not in props["cover_invert_control"]
     d = drive(garage)
     assert d.handle(1, Command("cover_invert_control", True))[0].code == "read_only"
-    assert TuyaDriver(garage, device_settings=True, allow_hazardous=True).descriptor["props"]["cover_invert_control"]["rw"]
+    assert TuyaDriver(garage, device_settings=True, allow_hazardous=True, rules=rules()).descriptor["props"]["cover_invert_control"]["rw"]
 
 
 def test_the_switches_show_the_settings_in_effect_even_offline():
     d = TuyaDriver(curtain(), overrides={"p": {"cover": {"invert_position": True, "infer_motion": False}}},
-                   device_settings=True)
-    outs = values(d.describe())
+                   device_settings=True, rules=rules())
+    outs = values(d.describe(now=0))
     assert outs["cover_invert_position"] is True and outs["cover_invert_set_position"] is False
     assert outs["available"] is False and "cover_state_source" in d.descriptor["props"]
     d.handle(0, Connected())
@@ -137,30 +132,27 @@ def test_invert_control_swaps_open_and_close(device, open_, close, stop):
 def test_invert_control_composes_with_the_users_alias():
     device = cover(fns=[("control", "Enum", {"range": ["on", "off", "pause"]})])     # device_settings off: as a file
     block = {"remap": {"control": {"alias": {"on": "open", "off": "close", "pause": "stop"}}}}
-    plain = TuyaDriver(device, overrides={"c1": block})
+    plain = TuyaDriver(device, overrides={"c1": block}, rules=rules())
     plain.handle(0, Connected())
     assert sent(plain.handle(1, Command("open", None))) == {"1": "on"}
-    d = TuyaDriver(device, overrides={"c1": {**block, "cover": {"invert_control": True}}})
+    d = TuyaDriver(device, overrides={"c1": {**block, "cover": {"invert_control": True}}}, rules=rules())
     d.handle(0, Connected())
     assert sent(d.handle(1, Command("open", None))) == {"1": "off"}
     assert sent(d.handle(2, Command("close", None))) == {"1": "on"}
     assert sent(d.handle(3, Command("stop", None))) == {"1": "pause"}
 
 
-def test_a_setting_xors_with_an_old_remap_invert_which_warns(caplog):
-    caplog.set_level(logging.WARNING)
+def test_a_setting_xors_with_an_old_remap_invert_returns_warnings():
     block = {"remap": {"percent_state": {"invert": True}}, "cover": {"invert_position": True}}
-    d = TuyaDriver(curtain() | {"id": "warn1"}, overrides={"warn1": block})
+    d = TuyaDriver(curtain() | {"id": "warn1"}, overrides={"warn1": block}, rules=rules())
     d.handle(0, Connected())
     assert values(d.handle(1, Message("state", {"3": 30})))["position"] == 30      # turned twice
-    assert "remap.percent_state.invert on a cover is deprecated" in caplog.text
-    caplog.clear()
-    TuyaDriver(curtain() | {"id": "warn2"}, overrides={"warn2": {"converters": {"cover_motion": {}}}})
-    assert "converters.cover_motion is deprecated" in caplog.text
-    caplog.clear()
+    assert any("remap.percent_state.invert on a cover is deprecated" in warning for warning in d.warnings)
+    legacy = TuyaDriver(curtain() | {"id": "warn2"}, overrides={"warn2": {"converters": {"cover_motion": {}}}}, rules=rules())
+    assert any("converters.cover_motion is deprecated" in warning for warning in legacy.warnings)
     lamp = cover(dev_id="warn3", category="kg", fns=[("switch_1", "Boolean", {})])
-    TuyaDriver(lamp, overrides={"warn3": {"remap": {"switch_1": {"invert": True}}}})   # not a cover: as it was
-    assert "deprecated" not in caplog.text
+    normal = TuyaDriver(lamp, overrides={"warn3": {"remap": {"switch_1": {"invert": True}}}}, rules=rules())   # not a cover: as it was
+    assert normal.warnings == []
 
 
 def test_position_from_target_and_invert_tilt():
@@ -176,9 +168,9 @@ def test_bad_cover_blocks_are_refused():
     for bad in ({"invert_positon": True}, {"invert_position": "yes"}, {"settle": -1}, {"control_2": {"x": True}},
                 {"control_2": {"control_3": {}}}):
         with pytest.raises(OverrideError):
-            TuyaDriver(curtain(), overrides={"cur1": {"cover": bad}})
+            TuyaDriver(curtain(), overrides={"cur1": {"cover": bad}}, rules=rules())
     with pytest.raises(OverrideError, match="no cover in a group"):
-        TuyaDriver(curtain(), overrides={"cur1": {"cover": {"control_2": {"invert_position": True}}}})
+        TuyaDriver(curtain(), overrides={"cur1": {"cover": {"control_2": {"invert_position": True}}}}, rules=rules())
 
 
 # ---- CoverMotion on top ----------------------------------------------------------------------------------------------
@@ -213,7 +205,7 @@ def test_infer_motion_off_leaves_no_cover_state_and_settle_is_passed_on():
 
 def test_a_users_cover_motion_wins_over_the_setting():
     d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {"invert": True}}}},
-                   device_settings=True)
+                   device_settings=True, rules=rules())
     assert "cover_state_source" not in d.descriptor["props"]                        # it would change nothing
     d.handle(0, Connected())
     assert motion(d.handle(1, Message("state", {"3": 100}))) == ["closed"]          # the user's own config
@@ -226,7 +218,7 @@ TWO = cover(fns=[CONTROL, ("percent_control", "Integer", PCT), ("control_2", "En
 
 
 def test_each_cover_has_its_switches_and_its_block():
-    d = TuyaDriver(TWO, overrides={"c1": {"cover": {"control_2": {"invert_position": True}}}}, device_settings=True)
+    d = TuyaDriver(TWO, overrides={"c1": {"cover": {"control_2": {"invert_position": True}}}}, device_settings=True, rules=rules())
     props = d.descriptor["props"]
     assert props["control_2_cover_invert_position"]["group"] == "control_2" and "cover_invert_position" in props
     assert props["control_2_cover_state"]["group"] == "control_2"
@@ -250,22 +242,9 @@ def test_writing_a_switch_sends_nothing_and_reports_the_block():
 
 def test_a_switch_keeps_what_differs_from_the_products_block_and_what_the_device_had():
     ov = {"p": {"cover": {"invert_position": True}}, "cur1": {"cover": {"settle": 3}}}
-    d = TuyaDriver(curtain(), overrides=ov, device_settings=True)
+    d = TuyaDriver(curtain(), overrides=ov, device_settings=True, rules=rules())
     assert d.handle(0, Command("cover_invert_position", False))[-1] == \
         SettingsChanged({"cover": {"invert_position": False, "settle": 3}})
-
-
-def test_the_hub_saves_and_a_reload_shows_the_setting_at_once():
-    hub = Hub([curtain()], device_settings=True)
-    hub.start()
-    hub.on_bridge_message(0, "cur1", Connected())
-    hub.on_bridge_message(1, "cur1", Message("state", {"3": 30}))
-    pubs = hub.on_il(2, "il/cur1/cover_invert_position/set", "true")
-    assert pubs == [Publish("il", "il/cur1/cover_invert_position", "true", True, 1),
-                    SaveSettings("cur1", {"cover": {"invert_position": True}})]
-    pubs = hub.reload({"cur1": {"cover": {"invert_position": True}}})
-    assert Publish("il", "il/cur1/position", "70", True, 1) in pubs
-    assert not [p for p in pubs if isinstance(p, BridgeCommand)]
 
 
 @pytest.mark.parametrize("device, words", [
@@ -307,7 +286,7 @@ def test_alias_then_control_inversion_then_report_inversion():
         for report_inv in (False, True):
             d = TuyaDriver(device, device_settings=True, overrides={"c1": {
                 "remap": {"control": {"alias": {"on": "open", "off": "close", "pause": "stop"}}},
-                "cover": {"state_source": "control", "invert_control": control_inv, "invert_reported_motion": report_inv}}})
+                "cover": {"state_source": "control", "invert_control": control_inv, "invert_reported_motion": report_inv}}}, rules=rules())
             d.handle(0, Connected())
             assert motion(d.handle(1, Message("active", {"1": "on"}))) == ["closing" if control_inv != report_inv else "opening"]
             assert sent(d.handle(2, Command("open", None))) == {"1": "off" if control_inv else "on"}
@@ -327,42 +306,16 @@ def test_none_only_derives_rest_and_legacy_setting_maps_to_select():
     assert not d.timers
 
 
-def test_reload_cancels_inference_timer_and_clears_motion():
-    from tuya2ildevice import Unschedule
-    hub = Hub([curtain()], device_settings=True, overrides={"cur1": {"cover": {"settle": 5}}})
-    hub.start()
-    hub.on_bridge_message(0, "cur1", Message("state", {"3": 50}))
-    hub.on_bridge_message(1, "cur1", Message("active", {"1": "open"}))
-    old = hub.drivers["cur1"]
-    assert old.timers
-    outs = hub.reload({"cur1": {"cover": {"state_source": "control"}}})
-    assert any(isinstance(o, Unschedule) for o in outs)
-    assert Publish("il", "il/cur1/cover_state", "stopped", True, 1) in outs
-    assert not hub.drivers["cur1"].timers
-
-
 def test_user_converter_owns_only_its_cover():
     d = TuyaDriver(TWO, device_settings=True, overrides={"c1": {
         "cover": {"state_source": "control", "control_2": {"state_source": "control", "invert_reported_motion": True}},
-        "converters": {"cover_motion": {}}}})
+        "converters": {"cover_motion": {}}}}, rules=rules())
     d.handle(0, Connected())
     assert "cover_state_source" not in d.descriptor["props"]
     assert "control_2_cover_state_source" in d.descriptor["props"]
     out = d.handle(1, Message("active", {"3": "open"}))
     assert motion(out, "control_2_cover_state") == ["closing"]
     assert motion(out) == []
-
-
-def test_reload_without_position_clears_retained_motion_and_hidden_setting_survives():
-    hub = Hub([CONTROL_ONLY], device_settings=True,
-              overrides={"c1": {"cover": {"state_source": "control", "invert_reported_motion": True}}})
-    hub.start()
-    hub.on_bridge_message(0, "c1", Message("active", {"1": "open"}))
-    outs = hub.reload({"c1": {"cover": {"state_source": "control", "invert_reported_motion": False}}})
-    assert Publish("il", "il/c1/cover_state", "", True, 1) in outs
-    assert not [o for o in outs if isinstance(o, Publish) and o.topic == "il/c1/cover_state" and o.payload]
-    # Retained active/passive packets never supply a live control report.
-    assert hub.on_bridge_message(1, "c1", Message("active", {"1": "close"}), retained=True) == []
 
 
 def test_multiple_cover_position_choices_and_saved_settings_are_independent():
@@ -391,11 +344,3 @@ def test_shared_position_is_never_compared_to_itself_for_motion():
 def test_invalid_state_source_is_rejected(bad):
     with pytest.raises(OverrideError):
         drive(curtain(), {"state_source": bad})
-
-
-def test_direct_mode_start_clears_a_previous_process_retained_motion():
-    hub = Hub([CONTROL_ONLY], device_settings=True,
-              overrides={"c1": {"cover": {"state_source": "control"}}})
-    assert Publish("il", "il/c1/cover_state", "", True, 1) in hub.start()
-    outs = hub.on_bridge_message(0, "c1", Message("state", {"1": "open"}), retained=True)
-    assert not [o for o in outs if isinstance(o, Publish) and o.topic == "il/c1/cover_state" and o.payload]

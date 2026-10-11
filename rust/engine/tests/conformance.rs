@@ -131,7 +131,7 @@ fn host_allocated_requests_round_trip() {
     use tuya_rule_engine::{
         tuya_engine_alloc, tuya_engine_dealloc, tuya_engine_eval, tuya_engine_free,
     };
-    let request = br#"{"op":"il","action":"encode","value":50.0}"#;
+    let request = br#"{"op":"merge","mappings":[{"value":50}]}"#;
     let len = request.len() + 1;
     let buffer = tuya_engine_alloc(len);
     assert!(tuya_engine_alloc(0).is_null());
@@ -139,7 +139,7 @@ fn host_allocated_requests_round_trip() {
         std::ptr::copy_nonoverlapping(request.as_ptr(), buffer, request.len());
         let output = tuya_engine_eval(buffer.cast());
         let response: Value = serde_json::from_slice(CStr::from_ptr(output).to_bytes()).unwrap();
-        assert_eq!(response, json!({"ok": true, "value": "50"}));
+        assert_eq!(response, json!({"ok": true, "value": {"value":50}}));
         tuya_engine_free(output);
         tuya_engine_dealloc(buffer, len);
         tuya_engine_dealloc(std::ptr::null_mut(), 0);

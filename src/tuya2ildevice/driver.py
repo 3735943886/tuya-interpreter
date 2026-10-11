@@ -1,12 +1,10 @@
 """One Tuya device, driven by the Rust engine. The driver's whole state is the JSON the engine returns."""
 from __future__ import annotations
 
-import logging
 from dataclasses import asdict, dataclass, field
 
 from . import io
 from .native import _call, register_rules
-from .native import rules as default_rules
 from .overrides import OverrideError
 
 
@@ -17,8 +15,8 @@ class HostEnv:
     allowed_units: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
-def default_env(rules: dict | None = None) -> HostEnv:
-    return HostEnv(allowed_units=(rules or default_rules())["host_units"])
+def default_env(rules: dict) -> HostEnv:
+    return HostEnv(allowed_units=rules["host_units"])
 
 
 def descriptor_of(device: dict, **kwargs) -> dict:
@@ -26,10 +24,10 @@ def descriptor_of(device: dict, **kwargs) -> dict:
 
 
 class TuyaDriver:
-    def __init__(self, device: dict, *, env: HostEnv | None = None, use_quirks: bool = True, dpmap: dict | None = None,
+    def __init__(self, device: dict, *, rules: dict, env: HostEnv | None = None, use_quirks: bool = True, dpmap: dict | None = None,
                  allow_hazardous: bool = False, expose_unused: bool = False, overrides: dict | None = None,
-                 device_settings: bool = False, rules: dict | None = None):
-        pack = rules if rules is not None else default_rules()
+                 device_settings: bool = False):
+        pack = rules
         self.rules_id = register_rules(pack)
         options = {"env": asdict(env or default_env(pack)), "use_quirks": use_quirks,
                    "dpmap": {str(k): v for k, v in (dpmap or {}).items()}, "allow_hazardous": allow_hazardous,
@@ -40,8 +38,7 @@ class TuyaDriver:
             if str(error).startswith("override:"):
                 raise OverrideError(str(error)) from error
             raise
-        for warning in result["warnings"]:
-            logging.getLogger(__name__).warning("device %s: %s", device["id"], warning)
+        self.warnings = result["warnings"]
         self.state = result["driver"]
 
     def call(self, op: str, **payload):
@@ -56,7 +53,7 @@ class TuyaDriver:
     def handle(self, now: float, inp: io.Input) -> list[io.Output]:
         return self._run(io.wire(inp), now)
 
-    def describe(self, seed=(), now: float = 0) -> list[io.Output]:
+    def describe(self, seed=(), *, now: float) -> list[io.Output]:
         return self._run({"type": "describe", "seed": [io.wire(i) for i in seed]}, now)
 
     def carry(self, old: TuyaDriver) -> None:

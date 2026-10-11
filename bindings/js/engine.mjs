@@ -45,32 +45,36 @@ export class Engine {
   }
 }
 
-/** One Tuya device behind an il-mqtt producer: its driver state lives here as JSON, between calls. Every method
- *  returns host actions (`publish`, `schedule`, `unschedule`, `bridge`, `save_settings`). */
+/** One transport-independent Tuya device. Rules and time are supplied by the host. */
 export class Driver {
-  constructor(engine, rulesId, device, options = {}, topics = {}) {
-    Object.assign(this, { engine, rulesId, topics });
-    this.state = engine.call({ op: "create", rules_id: rulesId, device, options }).driver;
+  constructor(engine, rulesId, device, options = {}) {
+    Object.assign(this, { engine, rulesId });
+    const result = engine.call({ op: "create", rules_id: rulesId, device, options });
+    this.state = result.driver;
+    this.warnings = result.warnings;
   }
 
-  hub(action, fields) {
-    const result = this.engine.call({ op: "hub", rules_id: this.rulesId, topics: this.topics, action, ...fields });
-    this.state = result.driver ?? this.state;
-    return result.actions;
+  get descriptor() {
+    return this.state.assembly.descriptor;
   }
 
-  /** Publish the device (`seed`: what is already known of it, e.g. `[{type: "connected"}]`). */
-  adopt(seed = [], now = Date.now() / 1000) {
-    return this.hub("adopt", { old: null, new: this.state, seed, now });
+  /** IL driver input; returns descriptor, value, event, send_message, reject or timer data. */
+  handle(now, input) {
+    if (!Number.isFinite(now)) throw new TypeError("now must be a finite number supplied by the host");
+    const result = this.engine.call({ op: "handle", rules_id: this.rulesId, driver: this.state, input, now });
+    this.state = result.driver;
+    return result.outputs;
   }
 
-  /** Bridge input (`{type: "connected"}`, `{type: "message", channel, json}`, ...) or `{type: "timer", name}`. */
-  input(input, { retained = false, now = Date.now() / 1000 } = {}) {
-    return this.hub("input", { driver: this.state, input, retained, now });
+  describe(now, seed = []) {
+    return this.handle(now, { type: "describe", seed });
   }
 
-  /** An il write to `prop` (the payload of `il/<id>/<prop>/set`). */
-  write(prop, payload, now = Date.now() / 1000) {
-    return this.hub("write", { driver: this.state, prop, payload, now });
+  carry(old) {
+    this.state = this.engine.call({ op: "carry", rules_id: this.rulesId, driver: this.state, old: old.state }).driver;
+  }
+
+  settingsBlock() {
+    return this.engine.call({ op: "settings", rules_id: this.rulesId, driver: this.state });
   }
 }

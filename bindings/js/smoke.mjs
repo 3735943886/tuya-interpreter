@@ -14,11 +14,12 @@ const device = {
   status_range: { switch_1: { type: "Boolean", values: "{}" } },
 };
 const plug = new Driver(engine, rules, device, { dpmap: { 1: "switch_1" } });
-const published = (actions) => Object.fromEntries(
-  actions.filter((a) => a.kind === "publish").map((a) => [a.topic, a.payload]));
-
-const described = published(plug.adopt([{ type: "connected" }]));
-assert.equal(JSON.parse(described["il/plug1"]).props.switch_1.type, "binary");
-assert.equal(published(plug.input({ type: "message", channel: "state", json: { 1: true } }))["il/plug1/switch_1"], "true");
-assert.deepEqual(plug.write("switch_1", "off"), [{ kind: "bridge", action: "set", dps: { 1: false } }]);
-console.log("ok: a switch driven from JavaScript");
+assert.equal(plug.descriptor.props.switch_1.type, "binary");
+assert.ok(plug.handle(0, { type: "connected" }).some((o) => o.type === "descriptor"));
+assert.ok(plug.handle(1, { type: "message", channel: "state", json: { 1: true } })
+  .some((o) => o.type === "value" && o.prop === "switch_1" && o.value === true));
+assert.deepEqual(plug.handle(2, { type: "command", prop: "switch_1", value: false }),
+  [{ type: "send_message", channel: "set", json: { dps: { 1: false } } }]);
+assert.equal(plug.handle(3, { type: "command", prop: "missing", value: true })[0].type, "reject");
+assert.throws(() => plug.handle(undefined, { type: "connected" }), TypeError);
+console.log("ok: bidirectional transport-independent driver from JavaScript");

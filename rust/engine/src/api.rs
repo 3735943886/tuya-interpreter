@@ -15,10 +15,8 @@ fn quirk<'a>(input: &'a V, device: &V, rules: &'a V) -> &'a V {
         .unwrap_or(&rules["quirks"][s(&device["product_id"])])
 }
 pub fn request(input: &V) -> Result<V, String> {
-    match s(&input["op"]) {
-        "merge_rules" => return crate::rules::compose(input),
-        "il" => return crate::il::request(input),
-        _ => {}
+    if s(&input["op"]) == "merge_rules" {
+        return crate::rules::compose(input);
     }
     let registry = PACKS.get_or_init(|| Mutex::new(HashMap::new()));
     if input["op"] == "install_rules" {
@@ -49,7 +47,6 @@ pub fn request(input: &V) -> Result<V, String> {
     };
     let rules = cached.as_deref().unwrap_or(&input["rules"]);
     match s(&input["op"]) {
-        "hub" => crate::hub::request(input, rules),
         "create" => {
             let mut d = Driver::new(&input["device"], &input["options"], rules)?;
             d.rules_id = s(&input["rules_id"]).into();
@@ -74,7 +71,11 @@ pub fn request(input: &V) -> Result<V, String> {
         }
         "handle" => {
             let mut d: Driver = decode(input, "driver")?;
-            let result = d.handle(n(&input["now"]), &input["input"], rules)?;
+            let now = input["now"]
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or("now must be a finite number supplied by the host")?;
+            let result = d.handle(now, &input["input"], rules)?;
             Ok(json!({"driver":d,"outputs":result}))
         }
         "carry" => {

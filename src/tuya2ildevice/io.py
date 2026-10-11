@@ -25,8 +25,7 @@ class Message:
       and accumulates deltas.
     * ``"passive"`` / ``"state"``: readback, periodic report or full snapshot. Updates values only.
 
-    `json` is what rustuya-bridge publishes: ``{"dps": {...}}``, ``{"data": {"dps": {...}}}`` (optionally with
-    ``"t"``) or the bare ``{"1": true}``.
+    `json` is a decoded flat DP map, e.g. ``{"1": true}``. The host unwraps any transport envelope.
     """
     channel: str
     json: Any

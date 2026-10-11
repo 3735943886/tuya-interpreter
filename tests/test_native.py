@@ -3,6 +3,7 @@ import copy
 
 import pytest
 from helpers import curtain
+from rule_data import call, rules
 
 from tuya2ildevice import (
     Command,
@@ -13,7 +14,6 @@ from tuya2ildevice import (
     TuyaDriver,
     Value,
 )
-from tuya2ildevice.native import call, rules
 
 
 def test_json_converter_reads_writes_and_keeps_state_across_ffi_calls():
@@ -31,7 +31,7 @@ def test_json_converter_reads_writes_and_keeps_state_across_ffi_calls():
                    'then': [{'emit': 'tick', 'value': get('state', 'count')}]}],
         'write': {'tens': [{'send': {'code': 'percent_control',
                                     'value': {'op': 'mul', 'args': [get('value'), 10]}}}]}}
-    driver = TuyaDriver(curtain(), overrides={'p': {'converters': {'declarative': converter}}})
+    driver = TuyaDriver(curtain(), overrides={'p': {'converters': {'declarative': converter}}}, rules=rules())
     driver.handle(0, Connected())
     outputs = driver.handle(1, Message('active', {'2': 40}))
     assert Value('tens', 4) in outputs and Value('updates', 1) in outputs
@@ -53,7 +53,7 @@ def test_the_package_has_no_python_conversion_code():
     for name in ('tuya2ildevice.tuya', 'tuya2ildevice.assemble', 'tuya2ildevice.fallback'):
         with pytest.raises(ImportError):
             importlib.import_module(name)
-    driver = TuyaDriver(curtain())
+    driver = TuyaDriver(curtain(), rules=rules())
     driver.handle(0, Connected())
     assert Value('position', 30) in driver.handle(1, Message('state', {'3': 30}))
     assert driver.handle(2, Command('position', 50)) == [SendMessage('set', {'dps': {'2': 50}})]

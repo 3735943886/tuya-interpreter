@@ -940,20 +940,6 @@ impl Driver {
         }
     }
 
-    /// Whether `other` would drive the device exactly as this one does (same rules, overrides,
-    /// settings and descriptor).
-    pub fn same_as(&self, other: &Driver) -> bool {
-        self.rules_id == other.rules_id
-            && self.block == other.block
-            && self.delta == other.delta
-            && self.assembly.descriptor == other.assembly.descriptor
-            && self
-                .covers
-                .iter()
-                .map(|c| &c.settings)
-                .eq(other.covers.iter().map(|c| &c.settings))
-    }
-
     pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<V>) {
         if value.is_null() {
             if self.values.as_object_mut().unwrap().remove(prop).is_some() {

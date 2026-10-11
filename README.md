@@ -3,7 +3,7 @@
 The one place that interprets Tuya. A Sans-IO Rust engine with a thin Python wrapper: takes a Tuya device as [rustuya](https://github.com/3735943886/rustuya) /
 [rustuya-bridge](https://github.com/3735943886/rustuya-bridge) know it and produces an
 [ildevice](https://github.com/3735943886/ildevice): descriptor, live values and events from dps packets, and dps for
-ildevice commands. The engine opens no sockets and reads no clock. Other projects
+ildevice commands. MQTT, TCP and other transports belong to the host. The engine opens no sockets and reads no clock. Other projects
 ([rustuya-local](https://github.com/3735943886/rustuya-local), ildevice hosts,
 [rustuya-manager](https://github.com/3735943886/rustuya-manager)) import this instead of carrying their own Tuya knowledge.
 
@@ -14,8 +14,10 @@ pip install tuya2ildevice              # no dependencies;  [test] for the tests
 ```python
 from tuya2ildevice import TuyaDriver, Connected, Message, Command, descriptor_of
 
-descriptor_of(device)                 # just the ildevice descriptor of a tuyadevices.json entry
-d = TuyaDriver(device)                # the state machine (il.md section 8)
+# device and rules are decoded data supplied by the host.
+
+descriptor_of(device, rules=rules)                 # just the ildevice descriptor of a tuyadevices.json entry
+d = TuyaDriver(device, rules=rules)                # the state machine (il.md section 8)
 d.handle(now, Connected())            # -> [Descriptor]
 d.handle(now, Message("active", {"1": True}))   # -> [Value(...), Event(...)]
 d.handle(now, Command("switch_1", "off"))    # -> [SendMessage("set", {"dps": {"1": False}})]  or  [Reject(...)]
@@ -24,7 +26,7 @@ d.handle(now, Command("switch_1", "off"))    # -> [SendMessage("set", {"dps": {"
 ## Portable rules and Rust engine
 
 The Python `TuyaDriver` delegates classification, descriptor assembly, commands, value conversion,
-quirks, delta accumulation, cover state and the il-mqtt wire mapping to Rust through a JSON C ABI. The wheel includes
+quirks, delta accumulation and cover state to Rust through a JSON C ABI. The wheel includes
 the native library; building from source requires Cargo (Rust 1.88 or newer). Another language binds the same two C
 functions (see [the engine documentation](docs/rust-engine.md)).
 
@@ -32,8 +34,8 @@ functions (see [the engine documentation](docs/rust-engine.md)).
 platform/category tables, and per platform an entity spec — its roles and their DP candidates, how a plan is built,
 the state it reads, the actions it writes and the properties it lays out — plus units, mappings, feature bits and
 quirks. The engine supplies only the interpreter, DP types and codecs, so changing these rules (even adding a
-platform) does not require rebuilding Rust. `TUYA_ENGINE_RULES` adds user JSON files or a directory over the bundled defaults; `TUYA_ENGINE_LIBRARY`
-selects another native library. Packs are cached by content for the process lifetime.
+platform) does not require rebuilding Rust. The host supplies `rules` explicitly, optionally composing decoded layers with `merge_rules`.
+`TUYA_ENGINE_LIBRARY` selects another native library. Packs are cached by content for the process lifetime.
 
 A `converters.declarative` override adds computed values, write commands and state/timer programs
 using JSON expressions; there are no code plugins. See [the rule language, ABI and build instructions](docs/rust-engine.md).
@@ -45,7 +47,7 @@ using JSON expressions; there are no code plugins. See [the rule language, ABI a
 - `Message(channel, json)`: `active` (device push: fires events, accumulates `add_ele`-style deltas) or `passive` /
   `state` (readback, snapshot: values only; with `delta.accept_passive`, a passive report adds its delta too, see
   [Delta settings](#delta-settings)). `json` is a flat `{dp: value}` map (the host has already decoded whatever
-  the bridge's own wire payload looked like — see `Hub.on_bridge_message` below).
+  the bridge's own wire payload looked like — see the host boundary below).
 - `Command(prop, value)` is checked as il.md section 5 says before anything is sent; failures come back as `Reject`.
   Values convert as in Home Assistant core (brightness goes through 0..255), so a written value can differ slightly
   from what is read back. A cover's position is the device's own number, never mirrored (core mirrors it); a device
@@ -70,8 +72,8 @@ Tuya devices are fragmented: a cloud schema can give a dp a non-standard code, l
 terms, before classification, so the fixed device goes through the same tables as any other and every IL consumer
 (il-ha, a discovery publisher, ...) sees the fix.
 
-`TuyaDriver(device, overrides=mapping)` / `Hub(devices, overrides=mapping)`; `mapping` is `{product_id or device id: block}`,
-already loaded (`merge_all([...])` merges several, later wins; `load_rules([directory])` reads rule files).
+`TuyaDriver(device, rules=rules, overrides=mapping)`; `mapping` is `{product_id or device id: block}`,
+already loaded (`merge_all([...])` merges several, later wins). File discovery and loading belong to the host.
 The block format is described below; Rust validates and applies it:
 
 ```json
@@ -122,14 +124,14 @@ Its `type` follows the dp's (Boolean `binary`, Integer `number`, Enum `select`, 
 `max`, `step`, `unit` and `options` come from the dp unless given; it is writable when the dp is in `function` (`rw:
 false` makes it read only); a `trigger` writes its `send` value. Values go through `remap` like any other.
 
-Unknown keys raise `OverrideError`. `Hub.reload(mapping)` applies new overrides live: republishes changed descriptors,
-clears removed properties, and works a changed device's values out again from the dps it last had.
+Unknown keys raise `OverrideError`. To reload rules or overrides, the host creates a replacement driver,
+optionally calls `new.carry(old)` to preserve compatible delta totals, and feeds its current snapshot.
+The host handles descriptor replacement and removed properties for its transport.
 
 ### Cover settings
 
 Which way a cover's position and commands run, and whether its motion is inferred, are the cover's settings, not
-`remap`: a curtain whose direction is wrong is fixed from its own configuration switches. `Hub(devices,
-device_settings=True)` (a host with somewhere to keep them) offers each switch only where it changes something:
+`remap`: a curtain whose direction is wrong is fixed from its own configuration switches. `TuyaDriver(device, rules=rules, device_settings=True)` (a host with somewhere to keep them) offers each switch only where it changes something:
 
 | switch (property) | label | offered when the cover has | does |
 |---|---|---|---|
@@ -145,8 +147,7 @@ control*. The switches are `binary`, the state source is `select`; all are `rw`,
 (garage, gate, ...) are read only unless `allow_hazardous`. A later cover of the device (`control_2`, ...) has its own,
 named by its group (`control_2_cover_invert_position`).
 
-Writing a switch sends nothing to the device: the driver answers with the value and `SettingsChanged(block)`, and the
-Hub with `SaveSettings(device_id, block)`, the device's whole settings block (e.g. `{"cover": {"invert_position":
+Writing a switch sends nothing to the device: the driver answers with the value and `SettingsChanged(block)`, with the device's whole settings block (e.g. `{"cover": {"invert_position":
 true}}`) for the host to keep (rustuya-local keeps it in `zz_settings.json` in its rules directory and reloads).
 
 The same settings are a `cover` block in any override file, where a product's block is the starting point for its
@@ -255,8 +256,8 @@ The cover settings give a cover its `cover_state` role (open / closed / opening 
 engine's motion tracker (`state_source: "inferred"`, or legacy `infer_motion`), on the dps the cover actually has,
 after its inversions. A command word only says a move started, the position reports after it decide which way; a
 snapshot never starts motion. Naming it in a block (`{"converters": {"cover_motion": {...}}}`) still works,
-deprecated. Timers come out as `SetTimer` (driver) or `Schedule` (`Hub`); the host calls back with `Timer` /
-`hub.on_timer(now, id, name)`.
+deprecated. Timers come out as `SetTimer`; the host calls back with
+`driver.handle(now, Timer(name))`.
 
 ## Rule files
 
@@ -274,55 +275,40 @@ User files contain partial rule objects, for example:
 }
 ```
 
-The native loader collects visible `*.json` files from the bundled and user locations,
-then applies them in ascending filename byte order (ASCII order for ASCII names).
-`00-default.json` and `zz_settings.json` have no special priority. Equal filenames
-preserve the supplied location order. Directory loading is non-recursive;
-`schema.json` and files starting with `.` or `_` are excluded. Objects merge recursively;
-arrays and scalar values replace earlier values. `{"$delete": true}` deletes an object member and
-`{"$append": [...]}` extends an array; `null` remains a literal value. An invalid final rule set is rejected.
-Product/device fixes live under `overrides`; a file whose members are not rule-pack fields is reported and left out.
-
-Set `TUYA_ENGINE_RULES=/path/to/user_rules` for a process-wide set; multiple file/directory paths
-can be separated with the OS path separator. Or load an independent set explicitly:
+The host reads rule files and chooses their order. Pass decoded layers to `merge_rules(layers, base=rules)`;
+objects merge recursively, arrays and scalars replace earlier values, `{"$delete": true}` removes a member,
+`{"$append": [...]}` extends an array, and `null` is literal. An invalid final rule set is rejected.
+There is no automatic rule loading or `TUYA_ENGINE_RULES` support.
 
 ```python
-from tuya2ildevice.native import load_rules
+from tuya2ildevice import merge_rules
 
-custom = load_rules(["/path/to/user_rules"])
+custom = merge_rules(user_layers, base=rules)["rules"]
 driver = TuyaDriver(device, rules=custom)
 ```
 
-The engine itself reads no files: `load_rules` reads them in Python and passes their contents.
-A host that follows a directory reloads with `hub.reload(rules["overrides"], rules=rules)`; the Hub replaces only
-the devices whose driving changed.
+## Host boundary and migration
 
-## tuya2ildevice <-> an IL host over MQTT
+A host keeps one `TuyaDriver` per device and supplies decoded inputs and an explicit `now`.
+The driver returns ildevice data, independent of MQTT, TCP or in-process consumption.
 
-`Hub` ([mqtt.py](src/tuya2ildevice/mqtt.py)) owns one driver per device and maps il-mqtt.md on the IL side. On the
-bridge side it takes already-decoded input, not a raw topic/payload: `on_bridge_message(now, device_id, inp,
-retained=False)` where `inp` is `Connected()` / `Disconnected()` / `Message(channel, dps)`, and its writes/reads to
-the bridge come out as abstract `BridgeCommand(device_id, action, dps)` — Hub has no idea rustuya-bridge's own MQTT
-topics exist, let alone that they're configurable. Rendering `BridgeCommand` into a real topic+payload, and turning
-a real bridge MQTT message into `Connected`/`Disconnected`/`Message`, is the **host's** job — correctly, that means
-using [pyrustuyabridge](https://github.com/3735943886/rustuya-bridge)'s bindings (`match_topic`, `render_template`,
-`tpl_to_wildcard`, `parse_seed_dps`), which mirror the real bridge's own template/payload parsing, not a hand-rolled
-one. [rustuya-local](https://github.com/3735943886/rustuya-local) is that host for a real rustuya-bridge; its
-`bridge_client` module is the reference implementation.
-
-Everything with I/O is the host's: the MQTT connection and its Last Will (`hub.presence(False)`), timers
-(`Schedule`/`Unschedule` -> `hub.on_timer`), the device file, rule files and saved settings (`SaveSettings`).
-[rustuya-local](https://github.com/3735943886/rustuya-local) is that host (its `rustuya_local.host`).
-
-| direction | shape |
+| Direction | Data |
 |---|---|
-| bridge -> hub | `hub.on_bridge_message(now, device_id, Connected() / Disconnected() / Message(channel, {dp: value}), retained)` |
-| hub -> bridge | `BridgeCommand(device_id, "set"/"get", dps)` (a `get` after a live connect, or for a device with no state yet; none when its retained snapshot is there) |
-| hub -> host | `SaveSettings(device_id, block)`, `Schedule`/`Unschedule` |
-| hub -> IL | `Publish`: il-mqtt.md retained `il/<id>` and `il/<id>/<prop>`; events and `il/<id>/reject` not retained; `il/_producer/tuya` presence |
-| IL -> hub | `hub.on_il(now, topic, payload, retained)` for `il/<id>/<prop>/set` (retained writes ignored) |
+| Tuya → driver | `Connected`, `Disconnected`, `Message(channel, flat_dps)` |
+| Driver → IL consumer | `Descriptor`, `Value`, `Absent`, `Event`, `Reject` |
+| IL consumer → driver | `Command(prop, value)` with a decoded value |
+| Driver → Tuya | `SendMessage("set", {"dps": ...})` |
+| Driver → host | `SetTimer`, `CancelTimer`, `SettingsChanged` |
 
-Register the devices on the bridge yourself (`add`); the hub never touches keys.
+The host executes timer requests and returns `Timer(name)`, persists settings, manages devices and snapshots,
+and implements its transport's framing, subscriptions, presence and retained-message policy.
+The driver never requests bridge registration or automatic `get` operations.
+
+This is a breaking API change: `Hub`, `IlTopics`, MQTT actions, `op: hub`, `op: il`, and rule-file loaders have
+been removed. Replace `Hub` calls with per-device `handle` calls and map their data in your host adapter.
+Python construction requires `rules=...`. JavaScript uses `Driver.handle(now, input)` with the same JSON tags.
+Native library loading remains binding infrastructure; neither binding reads rule files or a clock.
+Creation diagnostics are returned in `driver.warnings`; the host decides how to display or log them.
 
 ## Layout
 
@@ -332,7 +318,6 @@ rust/engine/   rule interpreter, Tuya primitives, explicit driver state and C AB
 src/tuya2ildevice/
   native.py    ctypes transport, library loading and rule-pack cache
   driver.py    TuyaDriver: one device's state JSON through the engine
-  mqtt.py      Hub: the drivers of many devices; adopting, feeding and the il-mqtt wire are the engine's
   io.py        inputs and outputs as data
 scripts/       generators (HA core tables, quirks, host units, Tuya categories) and build_rules.py, which folds
                their output into the rule pack

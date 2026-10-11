@@ -4,9 +4,9 @@ import re
 
 import fixtures
 import pytest
+from rule_data import rules
 
-from tuya2ildevice import Connected, IlTopics, Message, TuyaDriver, Value
-from tuya2ildevice.mqtt import Hub, Publish
+from tuya2ildevice import Connected, Message, TuyaDriver, Value
 
 WIRE = {"Boolean", "Integer", "Enum", "String", "Raw", "Json", "Bitmap"}
 
@@ -44,7 +44,7 @@ def fits(spec, value):
 @pytest.mark.parametrize("code", fixtures.all_codes())
 def test_a_fixture_state_publishes_values_that_fit(code):
     rec, dps = record(code)
-    d = TuyaDriver(rec, allow_hazardous=True)
+    d = TuyaDriver(rec, allow_hazardous=True, rules=rules())
     props = d.descriptor["props"]
     assert not [p for p in props if p == "prop" or p.startswith("prop_")]       # a composite without a core key
     out = d.handle(0, Connected()) + d.handle(1, Message("state", dps))
@@ -54,9 +54,9 @@ def test_a_fixture_state_publishes_values_that_fit(code):
 
 def test_a_fan_and_a_climate_power_are_named_after_their_dp():
     fan, _ = record("fs_g0ewlb1vmwqljzji")
-    assert TuyaDriver(fan).descriptor["props"]["switch"]["role"] == "on"
+    assert TuyaDriver(fan, rules=rules()).descriptor["props"]["switch"]["role"] == "on"
     ac, _ = record("cs_b9oyi2yofflroq1g")
-    assert TuyaDriver(ac).descriptor["props"]["switch"]["role"] == "on"
+    assert TuyaDriver(ac, rules=rules()).descriptor["props"]["switch"]["role"] == "on"
 
 
 @pytest.mark.parametrize("code,prop,unit,value", [
@@ -67,7 +67,7 @@ def test_a_fan_and_a_climate_power_are_named_after_their_dp():
 ])
 def test_electricity_values_keep_their_native_units(code, prop, unit, value):
     rec, dps = record(code)
-    driver = TuyaDriver(rec)
+    driver = TuyaDriver(rec, rules=rules())
     assert driver.descriptor["props"][prop]["unit"] == unit
     out = driver.handle(0, Connected()) + driver.handle(1, Message("state", dps))
     published = {o.prop: o.value for o in out if isinstance(o, Value)}
@@ -77,7 +77,7 @@ def test_electricity_values_keep_their_native_units(code, prop, unit, value):
 @pytest.mark.parametrize("code", fixtures.all_codes())
 def test_numeric_properties_declare_the_unit_of_the_published_value(code):
     rec, _ = record(code)
-    driver = TuyaDriver(rec, allow_hazardous=True)
+    driver = TuyaDriver(rec, allow_hazardous=True, rules=rules())
     plans = driver.state["plans"]
     for prop, binding in driver.state["assembly"]["bindings"].items():
         plan = plans[binding["source"]["plan"]] if "plan" in binding["source"] else {}
@@ -87,12 +87,3 @@ def test_numeric_properties_declare_the_unit_of_the_published_value(code):
         if spec["type"] == "number":
             native = plan["identity"].get("native_unit")
             assert spec.get("unit") == (native.replace("µ", "μ") if native else None)
-
-
-def test_the_descriptor_names_the_hubs_source():
-    rec, _ = record("fs_g0ewlb1vmwqljzji")
-    hub = Hub([rec], il=IlTopics("il", "tuya-house"))
-    pubs = [p for p in hub.start() if isinstance(p, Publish)]
-    import json
-    desc = next(json.loads(p.payload) for p in pubs if p.topic == f"il/{rec['id']}")
-    assert desc["source"] == "tuya-house" and pubs[0].topic == "il/_producer/tuya-house"

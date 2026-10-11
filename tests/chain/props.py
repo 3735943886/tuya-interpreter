@@ -8,6 +8,7 @@ import sys
 import fixtures
 from ildevice.core.descriptor import parse_descriptor
 from ildevice.core.plan import plan_entities
+from rule_data import rules
 
 from tuya2ildevice import descriptor_of
 
@@ -21,7 +22,7 @@ def locate(code: str, **kw):
     """-> (raw descriptor, {dp code: [(prop name, spec)]}) for one fixture."""
     kw.setdefault("allow_hazardous", True)
     dev = fixtures.load(code)
-    raw = descriptor_of(dev, **kw)
+    raw = descriptor_of(dev, rules=rules(), **kw)
     specs = plan_entities(parse_descriptor(raw))
     src = {n: p["src"] for n, p in raw["props"].items() if "src" in p}
     by_code = collections.defaultdict(list)

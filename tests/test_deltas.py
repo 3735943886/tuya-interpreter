@@ -4,18 +4,10 @@ import json
 
 import pytest
 from helpers import strat
+from rule_data import rules
 
-from tuya2ildevice import (
-    Command,
-    Connected,
-    Hub,
-    Message,
-    OverrideError,
-    TuyaDriver,
-    Value,
-)
+from tuya2ildevice import Command, Connected, Message, OverrideError, TuyaDriver, Value
 from tuya2ildevice.io import SettingsChanged
-from tuya2ildevice.mqtt import SaveSettings
 
 PLUG = {"id": "plug1", "category": "cz", "product_id": "p", "name": "Plug", "function": {},
         "status_range": {"add_ele": {"code": "add_ele", "type": "Integer", "report_type": "sum",
@@ -24,7 +16,7 @@ PLUG = {"id": "plug1", "category": "cz", "product_id": "p", "name": "Plug", "fun
 
 
 def _plug(block=None, **kw):
-    d = TuyaDriver(PLUG, overrides={"plug1": block} if block else None, **kw)
+    d = TuyaDriver(PLUG, overrides={"plug1": block} if block else None, **kw, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"17": 84}))                           # a snapshot never adds
     return d
@@ -62,25 +54,12 @@ def test_the_switch_saves_the_setting_and_only_a_device_with_a_delta_has_it():
         Value("delta_accept_passive", True), SettingsChanged({"delta": {"accept_passive": True}})]
     assert _total(d.handle(3, Message("passive", {"17": 5}))) == [0.005]  # in effect at once
     assert d.handle(4, Command("delta_accept_passive", False))[-1] == SettingsChanged({})
-    assert "delta_accept_passive" not in TuyaDriver(PLUG).descriptor["props"]          # no host to keep it
+    assert "delta_accept_passive" not in TuyaDriver(PLUG, rules=rules()).descriptor["props"]          # no host to keep it
     no_delta = {**PLUG, "status_range": {}, "local_strategy": strat({"1": ("switch_1", "Boolean")})}
-    assert "delta_accept_passive" not in TuyaDriver(no_delta, device_settings=True).descriptor["props"]
-
-
-def test_a_reload_keeps_the_total():
-    hub = Hub([PLUG], device_settings=True)
-    hub.start()
-    hub.on_bridge_message(1, "plug1", Connected())
-    hub.on_bridge_message(2, "plug1", Message("state", {"17": 84}))
-    hub.on_bridge_message(3, "plug1", Message("active", {"17": 5}))
-    (save,) = [p for p in hub.on_il(4, "il/plug1/delta_accept_passive/set", "true") if isinstance(p, SaveSettings)]
-    pubs = hub.reload({"plug1": save.block})
-    assert any(p.topic == "il/plug1/add_ele" and p.payload == "0.005" for p in pubs if hasattr(p, "topic"))
-    pubs = hub.on_bridge_message(5, "plug1", Message("passive", {"17": 5}))
-    assert [p.payload for p in pubs if p.topic == "il/plug1/add_ele"] == ["0.01"]
+    assert "delta_accept_passive" not in TuyaDriver(no_delta, device_settings=True, rules=rules()).descriptor["props"]
 
 
 @pytest.mark.parametrize("bad", [{"delta": {"accept_passive": 1}}, {"delta": {"passive": True}}, {"delta": True}])
 def test_a_bad_delta_block_is_refused(bad):
     with pytest.raises(OverrideError):
-        TuyaDriver(PLUG, overrides={"plug1": bad})
+        TuyaDriver(PLUG, overrides={"plug1": bad}, rules=rules())

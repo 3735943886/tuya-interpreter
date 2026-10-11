@@ -5,7 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tuya2ildevice.native import merge_rule_files, rule_paths
+from rule_data import rules
+
+from tuya2ildevice import merge_rules
 
 ROOT = Path(__file__).resolve().parent.parent
 PACK = ROOT / "pack"
@@ -21,5 +23,5 @@ def test_every_pack_file_is_a_rule_layer_for_this_format():
     entries = json.loads((PACK / "manifest.json").read_text())["files"]
     assert all(e.get("requires", 0) >= 4 for e in entries), "rule-layer files need `requires: 4`"
     files = [PACK / e["name"] for e in entries]
-    merged = merge_rule_files([*rule_paths(), *files], tolerant=True)
+    merged = merge_rules([json.loads(p.read_text()) for p in files], base=rules(), tolerant=True)
     assert not merged["warnings"]

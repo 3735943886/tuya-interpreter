@@ -11,16 +11,17 @@ def canonical(outputs):
     # Rejection codes are the portable contract; human diagnostic wording may differ.
     return [{k:v for k,v in out.items() if not (out.get('type')=='reject' and k=='reason')} for out in outputs]
 
+rules=json.loads((ROOT/'rules/00-default.json').read_text())
 failures=[]
 cases=json.loads((ROOT/'rust/engine/tests/driver_vectors.json').read_text())
 for case in cases:
     try:
-        driver=call('create',device=case['device'],options=case['options'])['driver']
+        driver=call('create',rules=rules,device=case['device'],options=case['options'])['driver']
         if driver['assembly']['descriptor']!=case['descriptor']:
             failures.append((case['name'],'descriptor',driver['assembly']['descriptor'],case['descriptor']))
             continue
         for step in case['steps']:
-            result=call('handle',driver=driver,input=step['input'],now=step['now'])
+            result=call('handle',rules=rules,driver=driver,input=step['input'],now=step['now'])
             driver=result['driver']
             if canonical(result['outputs'])!=canonical(step['outputs']):
                 failures.append((case['name'],step['input'],result['outputs'],step['outputs']))

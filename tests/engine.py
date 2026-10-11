@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from tuya2ildevice.native import call, rules
+from rule_data import call, rules
 
 
 class WriteRejected(ValueError):

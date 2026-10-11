@@ -1,9 +1,10 @@
-"""Device knowledge is data: each change below is a rule layer (what a user file under TUYA_ENGINE_RULES holds) and
+"""Device knowledge is data: each change below is a rule layer (decoded layers supplied by the host) and
 takes effect with the same engine library, no rebuild."""
 import fixtures
+from rule_data import rules
 
 from tuya2ildevice import Command, Connected, Message, SendMessage, TuyaDriver, Value
-from tuya2ildevice.native import _call, rules
+from tuya2ildevice.native import _call
 
 
 def layered(*layers):
@@ -25,7 +26,7 @@ def numbered(dev):
 
 def test_a_category_joins_a_platform_table():
     dev = {"id": "d", "category": "zz", "function": {"switch_1": {"type": "Boolean", "values": "{}"}}}
-    assert "switch_1" not in TuyaDriver(dev).descriptor["props"]
+    assert "switch_1" not in TuyaDriver(dev, rules=rules()).descriptor["props"]
     pack = layered({"platforms": {"switch": {"categories": {"zz": [{"key": "switch_1"}]}}}})
     assert TuyaDriver(dev, rules=pack).descriptor["props"]["switch_1"]["type"] == "binary"
 
@@ -34,7 +35,7 @@ def test_a_role_takes_another_dp_code():
     rng = '{"unit":"℃","min":0,"max":500,"scale":1,"step":5}'
     dev = {"id": "d", "category": "kt", "function": {"temp_set": {"type": "Integer", "values": rng}},
            "status_range": {"room_temperature": {"type": "Integer", "values": rng}}}
-    assert "current_temperature" not in TuyaDriver(dev).descriptor["props"]
+    assert "current_temperature" not in TuyaDriver(dev, rules=rules()).descriptor["props"]
     pack = layered({"entities": {"climate": {"params": {"codes": {"cur_temp_c": {"$append": ["room_temperature"]}}}}}})
     d = TuyaDriver(dev, rules=pack, dpmap={"1": "temp_set", "2": "room_temperature"})
     assert d.descriptor["props"]["current_temperature"]["unit"] == "°C"
@@ -67,7 +68,7 @@ def test_a_platform_gains_a_role_state_action_and_property():
 def test_a_state_word_is_mapped():
     dev = fixtures.load("sd_lr33znaodtyarrrz")
     ids = {c: i for i, c in numbered(dev).items()}
-    d = TuyaDriver(dev, dpmap=numbered(dev))
+    d = TuyaDriver(dev, dpmap=numbered(dev), rules=rules())
     d.handle(0, Connected())
     assert values(d.handle(1, Message("state", {ids["status"]: "goto_pos"})))["vacuum_state"] == "cleaning"
     d = TuyaDriver(dev, rules=layered({"maps": {"_VAC": {"goto_pos": "returning"}}}), dpmap=numbered(dev))

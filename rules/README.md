@@ -6,13 +6,10 @@ actions and property layout), units, maps, feature bits, quirks, and the `overri
 fixes. `schema.json` defines the complete format; partial user files are validated after merging with the
 defaults. The engine supplies only the interpreter, DP types and codecs, so a change here needs no rebuild.
 
-Put user files in a separate directory and set `TUYA_ENGINE_RULES` to that directory,
-or use `load_rules([directory])` and pass the result as `TuyaDriver(..., rules=...)`.
-The native loader collects visible `*.json` files from all supplied locations and applies them in
-ascending filename byte order (ASCII ascending for ASCII names). Equal filenames
-preserve the supplied location order. `00-default.json` has no special handling. Loading is non-recursive. Hidden
-files and `schema.json` are ignored. Saved settings in `zz_settings.json` follow the same filename order. Later
-filenames can override them.
+The host reads the default pack and any user files, chooses their order, and passes decoded JSON to
+`merge_rules(layers, base=pack)`. Construct `TuyaDriver(device, rules=result["rules"])`.
+No directory discovery, rule-file reads or environment-selected rule layers occur in the library.
+The default pack ships as an artifact for hosts to load; `00-default.json` has no special runtime priority.
 
 Objects merge recursively. Arrays and scalar values replace earlier values. `{"$delete": true}` deletes an object
 member, `{"$append": [...]}` extends an array, and `null` is a literal value.
