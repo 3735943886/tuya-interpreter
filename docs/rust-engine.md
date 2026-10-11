@@ -5,7 +5,7 @@ conversion callbacks.
 
 ## The contract
 
-1. **Device interpretation is JSON.** `rules/00-default.json` holds every piece of device and platform knowledge:
+1. **Device interpretation is JSON.** `rules/builtin/00-default.json` holds every piece of device and platform knowledge:
    category tables, entity specs, DP candidates, units, maps, feature bits, layouts and quirks.
 2. **The Rust core is shared and does no I/O.** It is an interpreter plus primitives that do not depend on any
    device: DP types (validate, scale, invert), Tuya codecs (`value_convert` strategies, electricity, HSV), the

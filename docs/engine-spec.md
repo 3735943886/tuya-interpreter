@@ -1,6 +1,6 @@
 # Tuya DP engine — specification (draft 2)
 
-> The engine is `rust/engine/` driven by the rule pack `rules/00-default.json` (this draft predates the move; its
+> The engine is `rust/engine/` driven by the rule pack `rules/builtin/00-default.json` (this draft predates the move; its
 > platform builders are now the pack's `entities` specs). "IL" and "tuya2ha" below mean this engine's own model,
 > **not** the ildevice IL (which the top-level package produces from the engine's entity plans).
 
@@ -336,7 +336,7 @@ L2 **hand-authored, reviewed** platform definitions mirroring handlers `definiti
 roles/alts/dpcode tuples and the *wrapper-class -> pipeline* table the generator resolves
 (`CoverClosedEnumWrapper`->map_table, `DPCodeInvertedPercentageWrapper`->remap reverse...).
 L3 quirks (`quirks.json`, 32, data; generated/verified against handlers).
-Layout: the rule pack `rules/00-default.json` (`platforms` = L1, `entities` = L2, `quirks` = L3, `host_units`) and
+Layout: the rule pack `rules/builtin/00-default.json` (`platforms` = L1, `entities` = L2, `quirks` = L3, `host_units`) and
 the interpreter in `rust/engine/src/`.
 
 ## 10. Adapter boundary (not IL)

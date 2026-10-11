@@ -1,7 +1,7 @@
 """L1 generator: HA core `tuya` description tables -> JSON (pinned to a core checkout).
 
 Usage: python gen_core_tables.py <core/homeassistant/components/tuya> <out dir>
-       python build_rules.py --tables <out dir>        (folds them into rules/00-default.json)
+       python build_rules.py --tables <out dir>        (folds them into rules/builtin/00-default.json)
 Evaluates module-level `NAME: dict[DeviceCategory, tuple[Desc, ...]] = {...}` assignments
 symbolically: DPCode.X / DeviceCategory.X -> their string values; other attribute refs
 (SwitchDeviceClass.OUTLET, EntityCategory.CONFIG...) -> "$Class.ATTR"; lambdas/calls that

@@ -34,7 +34,7 @@ Rust hosts can use `RulePack`, `Driver`, `DriverOptions`, `Input` and `Output` d
 state in memory without serializing it for each packet. Packs are caller-owned `Arc`s; failed inputs
 leave the driver unchanged. See [the Rust API](docs/rust-engine.md#native-rust-api).
 
-[`rules/00-default.json`](rules/00-default.json) is the canonical rule pack. Every device interpretation is data:
+[`rules/builtin/00-default.json`](rules/builtin/00-default.json) is the canonical rule pack. Every device interpretation is data:
 platform/category tables, and per platform an entity spec — its roles and their DP candidates, how a plan is built,
 the state it reads, the actions it writes and the properties it lays out — plus units, mappings, feature bits and
 quirks. The engine supplies only the interpreter, DP types and codecs, so changing these rules (even adding a
@@ -232,8 +232,9 @@ converter. Timers come out as `SetTimer`; the host calls back with `driver.handl
 
 ## Rule files
 
-The wheel ships [`rules/00-default.json`](rules/00-default.json). Fixes published between releases are the
-[override pack](rules/README.md#the-override-pack) (`rules/pack/` on `master`): rule files a host fetches into its rule directory.
+The wheel ships the [official rule pack](rules/README.md#the-official-rule-pack) in `rules/builtin/`,
+including [`00-default.json`](rules/builtin/00-default.json), additional official layers and their manifest.
+Hosts load official layers in filename order, then user files from their rule directory.
 User files contain partial rule objects, for example:
 
 ```json
@@ -282,7 +283,7 @@ rejected, and changing rules requires a replacement driver. Neither binding read
 ## Layout
 
 ```
-rules/         canonical language-neutral rule pack; pack/ holds the override pack (not bundled)
+rules/         user layers; builtin/ holds the bundled official rule pack and manifest
 rust/engine/   rule interpreter, Tuya primitives, explicit driver state, C ABI and the rule-pack schema
 src/tuya2ildevice/
   native.py    ctypes transport, library loading and rule-pack cache

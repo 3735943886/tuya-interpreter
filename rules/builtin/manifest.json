@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "requires": 4,
+      "name": "00-default.json",
+      "sha256": "f7cdad186c30c5d7a35d2c5b14c40df38ce816072162afd206e6ad33ab56d52b"
+    }
+  ]
+}

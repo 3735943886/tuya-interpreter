@@ -34,4 +34,4 @@ are NOT in snapshots (they live in core's test_*.py parametrized tests) -> extra
 - Golden limitation: button/binary_sensor/sensor snapshots were taken with entity_registry_enabled_by_default, so
   enabled_default is not golden-checked for them (value comes straight from the generated table).
 - `scripts/gen_core_tables.py` regenerates the L1 tables from a core checkout; `scripts/build_rules.py --tables` folds them
-  into `rules/00-default.json`.
+  into `rules/builtin/00-default.json`.

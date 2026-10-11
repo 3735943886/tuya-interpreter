@@ -35,7 +35,7 @@ def main():
         return result['value']
 
     call({'op': 'install_rules', 'rules_id': 'bench',
-          'rules': json.loads((ROOT / 'rules/00-default.json').read_text())})
+          'rules': json.loads((ROOT / 'rules/builtin/00-default.json').read_text())})
     cases = json.loads((ROOT / 'rust/engine/tests/driver_vectors.json').read_text())
     light = next(case for case in cases if case['name'] == 'dj_0gyaslysqfp4gfis')
     switch = {'name': 'switch', 'device': {'id': 'bench', 'category': 'kg',

@@ -7,7 +7,7 @@ use tuya_rule_engine::{
 fn pack() -> Arc<RulePack> {
     Arc::new(
         RulePack::new(
-            serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap(),
+            serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap(),
         )
         .unwrap(),
     )

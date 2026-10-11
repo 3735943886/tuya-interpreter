@@ -1,4 +1,4 @@
-"""Fold generator outputs into the canonical rule pack, rules/00-default.json.
+"""Fold generator outputs into the canonical rule pack, rules/builtin/00-default.json.
 
 Usage: python build_rules.py [--tables DIR] [--quirks FILE] [--host-units FILE] [--pack FILE]
 
@@ -15,7 +15,7 @@ import pathlib
 
 import standard
 
-PACK = pathlib.Path(__file__).resolve().parents[1] / "rules/00-default.json"
+PACK = pathlib.Path(__file__).resolve().parents[1] / "rules/builtin/00-default.json"
 
 
 def load(path: pathlib.Path):

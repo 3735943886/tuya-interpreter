@@ -36,6 +36,6 @@ class CustomBuildHook(BuildHookInterface):
         platform = sysconfig.get_platform().replace('-', '_').replace('.', '_')
         build_data['tag'] = 'py3-none-' + platform
         build_data['force_include'][str(library)] = 'tuya2ildevice/' + name
-        # The rule layers at the top of rules/; rules/pack is fetched by hosts from master, never bundled.
-        for layer in sorted((root / 'rules').glob('*.json')):
-            build_data['force_include'][str(layer)] = 'tuya2ildevice/rules/' + layer.name
+        # Bundle the official rule layers and their manifest together.
+        for layer in sorted((root / 'rules' / 'builtin').glob('*.json')):
+            build_data['force_include'][str(layer)] = 'tuya2ildevice/rules/builtin/' + layer.name

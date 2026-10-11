@@ -30,7 +30,7 @@ fn canonical(v: &Value) -> Value {
 #[test]
 fn frozen_driver_traces() {
     let rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     let cases: Vec<Value> = serde_json::from_str(include_str!("driver_vectors.json")).unwrap();
     let install: Value = serde_json::from_str(&evaluate_json(
         &json!({"op":"install_rules","rules_id":"conformance","rules":rules}).to_string(),
@@ -119,7 +119,7 @@ fn call(request: Value) -> Value {
 #[test]
 fn drivers_require_valid_matching_ordered_rules() {
     let rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     let device = json!({"id":"rule-test"});
     for context in [
         json!({}),
@@ -183,7 +183,7 @@ fn drivers_require_valid_matching_ordered_rules() {
 #[test]
 fn malformed_codec_inputs_return_errors_without_panicking() {
     let rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     let scene = format!("{}{}", "a".repeat(27), "é");
     let response = call(
         json!({"op":"strategy_read","name":"dj_v2_scene_alg","value":scene,"config":{},"rules":rules}),
@@ -202,7 +202,7 @@ fn malformed_codec_inputs_return_errors_without_panicking() {
 #[test]
 fn cover_features_and_device_identity_follow_rules() {
     let mut rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     rules["features"]["cover"]["OPEN"] = json!(1024);
     rules["features"]["cover"]["CLOSE"] = json!(2048);
     rules["constants"]["manufacturer"] = json!("Custom vendor");
@@ -225,7 +225,7 @@ fn cover_features_and_device_identity_follow_rules() {
 #[test]
 fn motion_property_comes_from_rules() {
     let mut rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     rules["motion_property"]["label"] = json!("Custom motion");
     let device = json!({"id":"test","category":"cl","product_id":"test",
         "function":{"control":{"type":"Enum","values":{"range":["open","stop","close"]}},
@@ -246,7 +246,7 @@ fn motion_property_comes_from_rules() {
 #[test]
 fn vacuum_return_mode_is_configurable() {
     let mut rules: Value =
-        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     rules["constants"]["vacuum_return_mode"] = json!("custom_return");
     rules["platforms"]["vacuum"]["categories"]["zz"] = json!({"key":""});
     let device = json!({"category":"zz","function":{"mode":{"type":"Enum","values":{"range":["custom_return"]}}}});

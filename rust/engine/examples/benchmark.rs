@@ -20,7 +20,8 @@ fn main() {
         .map(|n| n.parse().unwrap())
         .unwrap_or(5000);
     assert!(iterations > 0);
-    let pack: Value = serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+    let pack: Value =
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
     let rules = Arc::new(RulePack::new(pack.clone()).unwrap());
     call(json!({"op":"install_rules","rules_id":"bench","rules":pack}));
     let cases: Vec<Value> =

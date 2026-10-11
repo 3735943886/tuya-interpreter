@@ -2,7 +2,7 @@
 
 ## home-assistant/core and tuya-device-handlers
 
-The rule pack (`rules/00-default.json`) and the engine (`rust/engine/`) are a sans-I/O, data-driven reproduction of
+The rule pack (`rules/builtin/00-default.json`) and the engine (`rust/engine/`) are a sans-I/O, data-driven reproduction of
 [home-assistant/core](https://github.com/home-assistant/core)'s official `tuya` integration (Apache-2.0) and of
 [tuya-device-handlers](https://github.com/make-all/tuya-local) (Apache-2.0). The pack's category/platform tables
 (`platforms`) and quirk registry (`quirks`) are *generated* from those sources by `scripts/gen_core_tables.py` and

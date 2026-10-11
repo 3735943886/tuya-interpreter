@@ -6,7 +6,7 @@ import { Driver, Engine } from "./engine.mjs";
 const root = new URL("../../", import.meta.url);
 const wasm = process.argv[2] ?? new URL("rust/target/wasm32-unknown-unknown/release/tuya_rule_engine.wasm", root);
 const engine = await Engine.load(await readFile(wasm));
-const rules = engine.install(JSON.parse(await readFile(new URL("rules/00-default.json", root))), "default");
+const rules = engine.install(JSON.parse(await readFile(new URL("rules/builtin/00-default.json", root))), "default");
 
 const device = {
   id: "plug1", category: "kg", product_id: "p", name: "Plug",
@@ -24,7 +24,7 @@ assert.equal(plug.handle(3, { type: "command", prop: "missing", value: true })[0
 assert.throws(() => plug.handle(undefined, { type: "connected" }), TypeError);
 assert.throws(() => new Driver(engine, "missing", device), /rules/);
 assert.throws(() => engine.call({ op: "create", rules: { version: 1 }, device }), /rules/);
-const other = JSON.parse(await readFile(new URL("rules/00-default.json", root)));
+const other = JSON.parse(await readFile(new URL("rules/builtin/00-default.json", root)));
 other.constants.manufacturer = "Other vendor";
 engine.install(other, "other");
 assert.throws(() => engine.call({ op: "handle", rules_id: "other", driver: plug.state,

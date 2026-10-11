@@ -20,7 +20,6 @@ on:
       - "pyproject.toml"
       - "rust/**"
       - "rules/**"
-      - "!rules/pack/**"
       - "src/**"
       - "tests/test_native.py"
       - "tests/test_rules.py"

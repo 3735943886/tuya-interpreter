@@ -9,7 +9,7 @@ from tuya2ildevice.native import register_rules
 
 @functools.cache
 def rules():
-    return json.loads((Path(__file__).resolve().parents[1] / 'rules/00-default.json').read_text())
+    return json.loads((Path(__file__).resolve().parents[1] / 'rules/builtin/00-default.json').read_text())
 
 
 @functools.cache
