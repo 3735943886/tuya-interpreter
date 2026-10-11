@@ -18,7 +18,6 @@
     "constants",
     "cover_defaults",
     "cover_switches",
-    "motion_defaults",
     "motion_property",
     "strategies"
   ],
@@ -135,9 +134,6 @@
       "type": "object"
     },
     "cover_switches": {
-      "type": "object"
-    },
-    "motion_defaults": {
       "type": "object"
     },
     "motion_property": {

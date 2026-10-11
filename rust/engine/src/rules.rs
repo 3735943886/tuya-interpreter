@@ -7,7 +7,7 @@ fn schema() -> Result<&'static Value, String> {
     static SCHEMA: OnceLock<Result<Value, String>> = OnceLock::new();
     SCHEMA
         .get_or_init(|| {
-            serde_json::from_str(include_str!("../../../rules/schema.json"))
+            serde_json::from_str(include_str!("../schema.json"))
                 .map_err(|e| e.to_string())
         })
         .as_ref()

@@ -10,7 +10,7 @@ from rule_data import rules
 from tuya2ildevice import merge_rules
 
 ROOT = Path(__file__).resolve().parent.parent
-PACK = ROOT / "pack"
+PACK = ROOT / "rules" / "pack"
 
 
 def test_the_manifest_is_current():

@@ -9,12 +9,12 @@
   },
   "f6jujmx0is5td50x": {
     "remove": ["percent_state"],
-    "converters": {"cover_motion": {}}
+    "cover": {"state_source": "inferred"}
   },
   "h2wipnagcunsar5r": {
-    "converters": {"cover_motion": {}}
+    "cover": {"state_source": "inferred"}
   },
   "3i3exuay": {
-    "converters": {"cover_motion": {}}
+    "cover": {"state_source": "inferred"}
   }
 }

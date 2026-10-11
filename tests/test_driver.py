@@ -235,8 +235,8 @@ def _motion(outs):
     return [o.value for o in outs if isinstance(o, Value) and o.prop == "cover_state"]
 
 
-def test_cover_motion_builtin():
-    cfg = {"cur1": {"converters": {"cover_motion": {"invert": False, "settle": 5}}}}
+def test_inferred_cover_motion():
+    cfg = {"cur1": {"cover": {"state_source": "inferred", "settle": 5}}}
     d = TuyaDriver(curtain(), overrides=cfg, rules=rules())
     assert d.descriptor["props"]["cover_state"] == {"type": "select", "role": "cover_state",
                                                     "options": ["open", "closed", "opening", "closing", "stopped"]}
@@ -257,15 +257,15 @@ def test_cover_motion_builtin():
     assert Absent("cover_state") in outs and CancelTimer("c0:settle") in outs
 
 
-def test_cover_motion_follows_engine_position_by_default():
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
+def test_inferred_motion_follows_engine_position():
+    d = TuyaDriver(curtain(), overrides={"cur1": {"cover": {"state_source": "inferred"}}}, rules=rules())
     d.handle(0, Connected())
     assert _motion(d.handle(1, Message("state", {"3": 100}))) == ["open"]          # raw 100 = open, as the position
     assert _motion(d.handle(2, Message("active", {"2": 0}))) == ["closing"]        # raw target 0 = closed
 
 
 def test_a_live_passive_report_that_changes_a_value_is_a_push():
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
+    d = TuyaDriver(curtain(), overrides={"cur1": {"cover": {"state_source": "inferred"}}}, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"1": "stop", "2": 50, "3": 50}))
     assert _motion(d.handle(2, Message("passive", {"2": 50, "3": 50}))) == []      # a readback: nothing moved
@@ -277,7 +277,7 @@ def test_a_live_passive_report_that_changes_a_value_is_a_push():
 def test_the_bridges_merged_state_copy_does_not_settle_a_move():
     """rustuya-bridge publishes each report on `passive` (or `active`) and again on `state`, its merged view: the copy
     right behind it changes nothing, so the move goes on until the position arrives (a trace from a real curtain)."""
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"cover_motion": {}}}}, rules=rules())
+    d = TuyaDriver(curtain(), overrides={"cur1": {"cover": {"state_source": "inferred"}}}, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"1": "close", "2": 10, "3": 10}))
     got = [_motion(d.handle(i + 2, Message(ch, m))) for i, (ch, m) in enumerate([

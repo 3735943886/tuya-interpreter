@@ -51,7 +51,6 @@ export class Driver {
     Object.assign(this, { engine, rulesId });
     const result = engine.call({ op: "create", rules_id: rulesId, device, options });
     this.state = result.driver;
-    this.warnings = result.warnings;
   }
 
   get descriptor() {

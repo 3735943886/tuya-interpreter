@@ -1,4 +1,4 @@
-"""Write pack/manifest.json from the files in pack/: name and SHA-256 of each, keeping the `requires` / `until` an
+"""Write rules/pack/manifest.json from the files in rules/pack/: name and SHA-256 of each, keeping the `requires` / `until` an
 entry already has. Run it after changing a pack file; tests/test_pack.py fails while the manifest is stale.
 
     python scripts/build_pack.py [--check]
@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-PACK = Path(__file__).resolve().parent.parent / "pack"
+PACK = Path(__file__).resolve().parent.parent / "rules" / "pack"
 
 
 def build() -> str:
@@ -31,5 +31,5 @@ if __name__ == "__main__":
     text = build()
     target = PACK / "manifest.json"
     if "--check" in sys.argv[1:]:
-        sys.exit(0 if target.is_file() and target.read_text() == text else "pack/manifest.json is stale: run scripts/build_pack.py")
+        sys.exit(0 if target.is_file() and target.read_text() == text else "rules/pack/manifest.json is stale: run scripts/build_pack.py")
     target.write_text(text)

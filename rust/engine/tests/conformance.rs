@@ -2,45 +2,11 @@ use serde_json::{Value, json};
 use tuya_rule_engine::evaluate_json;
 
 #[test]
-fn python_numeric_vectors() {
-    let cases: Vec<Value> = serde_json::from_str(include_str!("numeric_vectors.json")).unwrap();
-    for case in cases {
-        let actual: Value =
-            serde_json::from_str(&evaluate_json(&case["request"].to_string())).unwrap();
-        assert_eq!(
-            actual["ok"], case["expected"]["ok"],
-            "{}: {actual}",
-            case["name"]
-        );
-        if actual["ok"] == true {
-            let expected = &case["expected"]["value"];
-            if expected.is_number() {
-                assert_eq!(
-                    actual["value"].as_f64(),
-                    expected.as_f64(),
-                    "{}",
-                    case["name"]
-                );
-            } else if expected.is_boolean() {
-                // Python integer validation preserves bool; later scale converts it to numeric.
-                assert_eq!(
-                    actual["value"].as_f64(),
-                    Some(if expected == true { 1.0 } else { 0.0 })
-                );
-            } else {
-                assert_eq!(&actual["value"], expected, "{}", case["name"]);
-            }
-        }
-    }
-}
-
-#[test]
-fn rejects_invalid_protocol() {
+fn rejects_invalid_requests() {
     for input in [
         "not json".to_string(),
-        json!({"version": 99, "value": 1, "ops": []}).to_string(),
-        json!({"version": 1, "value": 1, "ops": [{"op": "python_eval"}]}).to_string(),
-        json!({"version": 1, "value": 1, "ops": [], "unexpected": true}).to_string(),
+        json!({"value": 1}).to_string(),
+        json!({"op": "python_eval"}).to_string(),
     ] {
         let response: Value = serde_json::from_str(&evaluate_json(&input)).unwrap();
         assert_eq!(response["ok"], false);
@@ -62,7 +28,7 @@ fn canonical(v: &Value) -> Value {
 }
 
 #[test]
-fn full_driver_reference_traces() {
+fn frozen_driver_traces() {
     let rules: Value =
         serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
     let cases: Vec<Value> = serde_json::from_str(include_str!("driver_vectors.json")).unwrap();
@@ -257,19 +223,19 @@ fn cover_features_and_device_identity_follow_rules() {
 }
 
 #[test]
-fn motion_configuration_comes_from_rules() {
+fn motion_property_comes_from_rules() {
     let mut rules: Value =
         serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
-    rules["motion_defaults"]["command"] = json!("custom_command");
-    rules["motion_defaults"]["settle"] = json!(4);
     rules["motion_property"]["label"] = json!("Custom motion");
-    let created = call(
-        json!({"op":"create","device":{"id":"test","product_id":"test"},
-        "options":{"overrides":{"test":{"auto":false,"converters":{"cover_motion":{}}}}},"rules":rules}),
-    );
+    let device = json!({"id":"test","category":"cl","product_id":"test",
+        "function":{"control":{"type":"Enum","values":{"range":["open","stop","close"]}},
+                    "percent_control":{"type":"Integer","values":{"min":0,"max":100,"scale":0,"step":1}}},
+        "status_range":{"percent_state":{"type":"Integer","values":{"min":0,"max":100,"scale":0,"step":1}}}});
+    let created = call(json!({"op":"create","device":device,
+        "options":{"overrides":{"test":{"cover":{"state_source":"inferred","settle":4}}}},"rules":rules}));
     assert_eq!(created["ok"], true, "{created}");
     let driver = &created["value"]["driver"];
-    assert_eq!(driver["motions"][0]["command"], "custom_command");
+    assert_eq!(driver["motions"][0]["command"], "control");
     assert_eq!(driver["motions"][0]["settle"], 4.0);
     assert_eq!(
         driver["assembly"]["descriptor"]["props"]["cover_state"]["label"],

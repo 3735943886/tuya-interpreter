@@ -69,7 +69,7 @@ def test_alias_translates_both_ways_and_the_enum_range():
 
 def test_alias_is_applied_before_the_converters_see_the_value():
     ov = {"p": {"remap": {"control": {"alias": {"on": "open", "off": "close", "pause": "stop"}}},
-                "converters": {"cover_motion": {"invert": False}}}}
+                "cover": {"state_source": "inferred"}}}
     d = TuyaDriver(_odd_curtain(), overrides=ov, rules=rules())
     d.handle(0, Connected())
     d.handle(1, Message("state", {"3": 50}))

@@ -1,9 +1,7 @@
 # Portable Tuya rule engine
 
-The complete production `TuyaDriver` executes in Rust. Python transports JSON
-through a two-function C ABI without conversion callbacks.
-There is no Python conversion fallback and no Python interpreter in the Rust library.
-The original implementation is frozen under `tests/reference/` for oracle tooling.
+The complete `TuyaDriver` executes in Rust. Python transports JSON through a two-function C ABI without
+conversion callbacks.
 
 ## The contract
 
@@ -34,11 +32,12 @@ The original implementation is frozen under `tests/reference/` for oracle toolin
 | `quirks` | tuya-device-handlers' schema patches by product id, generated |
 | `units`, `host_units` | unit aliases and HA's allowed units, generated |
 | `maps`, `features`, `constants`, `wind`, `electricity`, `meter_alarms` | lookup data the specs and codecs use |
-| `cover_defaults`, `cover_switches`, `motion_defaults`, `motion_property` | cover settings and the motion tracker's defaults |
+| `cover_defaults`, `cover_switches`, `motion_property` | cover settings, their switch labels and the `cover_state` property |
 | `strategies` | the codec names a device's `local_strategy` may use |
+| `rw_roles` | roles that imply a writable property; an override's `rw: false` drops such a role |
 | `overrides` | product/device fixes (README) |
 
-`rules/schema.json` validates the whole pack. `scripts/build_rules.py` folds the generators' output (HA core tables,
+`rust/engine/schema.json`, compiled into the engine, validates the whole pack. `scripts/build_rules.py` folds the generators' output (HA core tables,
 quirks, host units) into it, leaving the hand-authored parts as they are.
 
 ## Entity specs
@@ -146,13 +145,13 @@ define which state is cleared on disconnect.
 
 Layers merge recursively: objects merge, other values replace, `{"$delete": true}` removes a member and
 `{"$append": [...]}` extends an array. `merge_rules` takes an optional `base` and ordered `layers` (each a rule object,
-or `{"source": name, "rules": object}` to name it in reports), validates the result against the bundled schema and
+or `{"source": name, "rules": object}` to name it in reports), validates the result against the engine's schema and
 returns `{rules, sources, warnings}`; with `tolerant` a layer that would make the rules invalid is reported and left
 out.
 
 Neither engine nor bindings load rule files. Hosts decode and order layers, then call
 `merge_rules(layers, base=pack, tolerant=False)` in Python or `op: merge_rules` through the ABI.
-Python `TuyaDriver(device, rules=pack)` requires an explicit pack. `TUYA_ENGINE_RULES` is no longer supported.
+Python `TuyaDriver(device, rules=pack)` requires an explicit pack.
 `TUYA_ENGINE_LIBRARY` selects the native library used by the Python binding.
 
 ## C ABI
@@ -181,7 +180,7 @@ The registry caches rules, never device state.
 
 | `op` | Request fields | Result |
 | --- | --- | --- |
-| `create` | `device`, `options` | `{driver, warnings}` |
+| `create` | `device`, `options` | `{driver}` |
 | `handle` | `driver`, `input`, `now` | `{driver, outputs}` |
 | `carry` | `driver`, `old` | `{driver}` with compatible delta totals |
 | `settings` | `driver` | settings block |
@@ -193,7 +192,6 @@ The registry caches rules, never device state.
 Driver state is explicit JSON: DP values, published values, delta totals, cover motion, converter state, settings
 and timer names. No sockets or clocks are read; serialize the returned driver to continue in another process with
 the same engine and pack. Internal driver state is version-specific, not a durable storage format.
-States created before the rule fingerprint was introduced must be recreated from the device and rule pack.
 
 Input/output tags are snake_case: `connected`, `disconnected`, `message`, `command`, `timer`; outputs `descriptor`,
 `value`, `absent`, `event`, `send_message`, `reject`, `set_timer`, `cancel_timer`, `settings_changed`.
@@ -250,12 +248,10 @@ recorded version through `PKG-INFO`, so building a wheel from an sdist does not 
 library; `TUYA_ENGINE_TARGET` or `CARGO_BUILD_TARGET` selects an explicit target. Local Linux wheels
 are tagged for their local platform; manylinux repair happens in release CI.
 
-Existing HA core/quirk/action golden tests exercise the Rust-backed APIs. An
-additional frozen oracle contains 324 complete driver traces / 3,421 steps,
-covering descriptors, snapshots, active/passive packets, writes, disconnect and
-reconnect. The Rust test runner consumes them without Python. The numeric corpus
-contains 144 cases; the adapter tests compare Rust with Tuya SDK 0.2.15.
-
-Oracle tooling under `scripts/rust/` imports the frozen reference only to export
-vectors. Do not regenerate expected data to conceal a failing Rust test. For
-new intended behavior, review the rule change and update independent goldens.
+Existing HA core/quirk/action golden tests exercise the Rust-backed APIs. In addition,
+`rust/engine/tests/driver_vectors.json` holds 324 complete driver traces / 3,421 steps,
+frozen from an earlier reference implementation, covering descriptors, snapshots,
+active/passive packets, writes, disconnect and reconnect. The Rust test runner consumes
+them without Python; the adapter tests compare Rust with Tuya SDK 0.2.15. Do not
+rewrite expected data to conceal a failing test: for new intended behavior, review the
+rule change and update the affected traces and goldens deliberately.

@@ -102,7 +102,7 @@ The block format is described below; Rust validates and applies it:
 | `cover` | a cover's direction and motion (below) |
 | `props`, `device` | the finished descriptor: label, class, category, unit, role, read only, hidden; device kind/class/label/model |
 | `props.<name>` with a `src` | a property defined from a dp (below), replacing one of that name |
-| `converters` | `declarative` (JSON programs, below) and `cover_motion` |
+| `converters` | `declarative` (JSON programs, below) |
 | `expose_unused` | this device only: every dp no table claims gets a property of its own |
 | `auto: false` | no property from the tables at all: only what `props` defines and the converters give |
 
@@ -158,25 +158,44 @@ devices and a device's (the switches write the device's) wins:
 | `invert_position` | `false` | as the switch |
 | `invert_set_position` | `false` | as the switch |
 | `invert_control` | `false` | as the switch |
-| `infer_motion` | `device_settings` | legacy Boolean, used only when `state_source` is absent; true maps to `inferred`, false to `none` |
-| `state_source` | legacy `infer_motion` | `control`, `inferred`, or `none`; an explicit value takes precedence over the legacy Boolean |
+| `state_source` | `inferred` with `device_settings`, else unset | `control`, `inferred` or `none`; unset gives the cover no `cover_state` |
 | `invert_reported_motion` | `false` | invert only direct control reports |
 | `settle` | `0` | seconds without a position report after which a move counts as stopped (0: never) |
 | `invert_tilt` | `false` | the tilt the other way |
 | `position_from_target` | `false` | the reported position dp is left out and the target read as the position |
 
 A later cover's keys go in an object under its group's name: `{"cover": {"invert_position": true, "control_2":
-{"invert_position": true}}}`. An inversion is laid over the dp's `remap` (a `remap.invert` still there cancels it), and
+{"invert_position": true}}}`. An inversion is laid over the dp's `remap` (a `remap.invert` there cancels it), and
 the swap is composed with the dp's `remap.alias`, so a device that says `on` / `off` / `pause` keeps its alias.
-`remap.<code>.invert` on a cover's position or command dp and `converters.cover_motion` still work, and log that they
-are deprecated: move them to `cover`.
 
-`control` maps live open/close/stop reports directly to opening/closing/stopped, even without
-position feedback. Boolean true/false and FZ/ZZ/STOP use the same control vocabulary as inference.
-The order on input is `remap.alias`, existing `invert_control` (where applicable), then
-`invert_reported_motion`. The last setting swaps only opening/closing from control reports;
-it never changes sent commands, positions, inferred direction, or endpoint states. Live stop
-is always stopped. Position updates alone do not settle a directly reported movement.
+The state source decides the cover's `cover_state` (open / closed / opening / closing / stopped):
+
+- `control` maps live open/close/stop reports directly to opening/closing/stopped, even without position feedback.
+  Boolean true/false and FZ/ZZ/STOP use the same control vocabulary as inference. The order on input is
+  `remap.alias`, `invert_control` (where applicable), then `invert_reported_motion`, which swaps only
+  opening/closing from control reports: it never changes sent commands, positions, inferred direction or endpoint
+  states. Live stop is always stopped. Position updates alone do not settle a directly reported movement, and this
+  mode has no settle timer.
+- `inferred`: a control word can start motion; subsequent position feedback corrects its direction, while an
+  independent target can be compared with the current position. A shared current/target DP is never compared
+  against itself. Without independent feedback, command direction and arrival cannot be verified; a target-only
+  update does not prove movement.
+- `none` generates only the resting state from the position, never movement.
+
+Retained snapshots/readbacks (`state`, and non-live passive reports) never start motion: their control may be the
+last command. A relevant snapshot reports only the position's resting state (closed at 0, open at 100, stopped
+between), or no state without position. Disconnect clears motion; reconnect/reload seeds only the resting state and
+waits for a live report. Duplicate live reports do not republish unchanged state.
+
+A declarative converter that defines a cover's `cover_state` owns it: that cover gets neither the built-in state
+producer nor its source/direction switches. Other covers of the device are independent.
+
+Settings remain saved while their switches are hidden: target inversion is dormant while current and target share a
+DP, and reported motion inversion is dormant outside control mode; switching back restores them. Current-position
+inversion follows the selected display source; when that source is also the target, it inverts both reads and
+writes. Property IDs and cover group IDs stay stable through source changes. A host reload cancels old timers and
+clears the old cover state before publishing a fresh snapshot; a bare sans-IO caller saves `SettingsChanged` and
+reloads, as for any switch.
 
 ### Delta settings
 
@@ -195,54 +214,6 @@ It is the `delta` block's `accept_passive` (default `false`) in an override file
 asks for (a `get`, on a reconnect) carries no new increment but adds once more, so turn it on only for a device that
 does not push. A reload (an override or a setting changed) keeps the totals.
 
-Retained snapshots/readbacks (`state`, and non-live passive reports) never start motion: their
-control may be the last command. A relevant snapshot reports only the position's resting state
-(closed at 0, open at 100, stopped between), or no state without position. Disconnect clears
-motion; reconnect/reload seeds only resting state and waits for a live report. Duplicate live
-reports do not republish unchanged state. Direct report mode has no settle timer.
-
-`inferred` preserves CoverMotion: a control word can start motion; subsequent position feedback
-corrects its direction, while an independent target can be compared with current position.
-A shared current/target DP is never compared against itself. Without independent feedback,
-command direction and arrival cannot be verified; a target-only update does not prove movement.
-`none` generates only resting state from position and never movement. Legacy `infer_motion:false`
-keeps its previous behavior of omitting the separate cover_state property (position remains
-available); explicitly selecting `none` also provides the resting state property.
-
-The old Infer motion switch is replaced by the state source select, not exposed alongside it.
-Existing JSON and saved `zz_settings.json` Booleans remain readable; the select shows their mapped
-mode and subsequent selections save `state_source`. Explicit state_source wins even if an older
-infer_motion entry remains. A user converter owning a cover's `cover_state` retains ownership:
-that cover gets neither the built-in state producer nor its source/direction controls. Other
-covers remain independent, including when legacy `converters.cover_motion` owns the first one.
-
-Settings remain saved while their controls are hidden: target inversion is dormant while current
-and target share a DP, and reported motion inversion is dormant outside control mode. Switching
-back restores them. Current-position inversion follows the selected display source; when that
-source is also the target, it inverts both reads and writes. Property IDs and cover group IDs
-stay stable through source changes. Host reload cancels old timers and clears the old cover state
-before publishing a fresh snapshot. A bare sans-IO caller must save SettingsChanged and reload,
-just as for the existing inversion switches.
-
-For **f6jujmx0is5td50x**, remove its old `remove`, `remap` and `converters.cover_motion` JSON
-entries, then configure the device (no product ID is hardcoded):
-
-1. **Use target as current position**: ON.
-2. **Invert current position**: ON.
-3. **Motion state source**: `control`.
-4. **Invert reported motion**: ON.
-
-This selects percent_control (DP 2 in the referenced schema), inverts its reads and writes, and
-reverses only the reported motion. The DP name does not establish that it reports physical position:
-if firmware reports only a target, the displayed position is only that target; intermediate travel,
-arrival and physical resting position cannot be determined from it.
-
-The previous rustuya-homeassistant JSON selected DP 2, inverted position reads and target writes,
-and mapped control directly; it was not enrolled in the Python converter because it had no
-`state_stream: "derived"`. Its MQTT open/close commands used control open/close. This package
-continues to send target 100/0 when set_position exists (after position inversion), so its command
-path is **different from that earlier implementation**. Report inversion does not change that path.
-
 Model-specific fixes use the `overrides` section of the same rules JSON, either in the shipped defaults or in a user file.
 
 ## Converters
@@ -252,17 +223,13 @@ as JSON programs in the rule language (see [the engine documentation](docs/rust-
 properties may replace the tables' ones of the same name; one with `rw: true` (or a trigger) needs a `write` program.
 There are no code plugins: every converter is data and runs in the engine, so any binding drives it.
 
-The cover settings give a cover its `cover_state` role (open / closed / opening / closing / stopped) through the
-engine's motion tracker (`state_source: "inferred"`, or legacy `infer_motion`), on the dps the cover actually has,
-after its inversions. A command word only says a move started, the position reports after it decide which way; a
-snapshot never starts motion. Naming it in a block (`{"converters": {"cover_motion": {...}}}`) still works,
-deprecated. Timers come out as `SetTimer`; the host calls back with
-`driver.handle(now, Timer(name))`.
+A cover's own `cover_state` comes from its [cover settings](#cover-settings) (`state_source`), not from a
+converter. Timers come out as `SetTimer`; the host calls back with `driver.handle(now, Timer(name))`.
 
 ## Rule files
 
 The wheel ships [`rules/00-default.json`](rules/00-default.json). Fixes published between releases are the
-[override pack](pack/README.md) (`pack/` on `master`): rule files a host fetches into its rule directory.
+[override pack](rules/README.md#the-override-pack) (`rules/pack/` on `master`): rule files a host fetches into its rule directory.
 User files contain partial rule objects, for example:
 
 ```json
@@ -278,7 +245,7 @@ User files contain partial rule objects, for example:
 The host reads rule files and chooses their order. Pass decoded layers to `merge_rules(layers, base=rules)`;
 objects merge recursively, arrays and scalars replace earlier values, `{"$delete": true}` removes a member,
 `{"$append": [...]}` extends an array, and `null` is literal. An invalid final rule set is rejected.
-There is no automatic rule loading or `TUYA_ENGINE_RULES` support.
+There is no automatic rule loading.
 
 ```python
 from tuya2ildevice import merge_rules
@@ -287,7 +254,7 @@ custom = merge_rules(user_layers, base=rules)["rules"]
 driver = TuyaDriver(device, rules=custom)
 ```
 
-## Host boundary and migration
+## Host boundary
 
 A host keeps one `TuyaDriver` per device and supplies decoded inputs and an explicit `now`.
 The driver returns ildevice data, independent of MQTT, TCP or in-process consumption.
@@ -304,34 +271,27 @@ The host executes timer requests and returns `Timer(name)`, persists settings, m
 and implements its transport's framing, subscriptions, presence and retained-message policy.
 The driver never requests bridge registration or automatic `get` operations.
 
-This is a breaking API change: `Hub`, `IlTopics`, MQTT actions, `op: hub`, `op: il`, and rule-file loaders have
-been removed. Replace `Hub` calls with per-device `handle` calls and map their data in your host adapter.
-Python construction requires `rules=...`. JavaScript uses `Driver.handle(now, input)` with the same JSON tags.
-Rule object declaration order is preserved in the cache and driver fingerprint. Missing, invalid or changed
-packs are rejected; changing rules requires a replacement driver. Recreate previously serialized driver states,
-which lack the new fingerprint, from their device and rule pack.
-Native library loading remains binding infrastructure; neither binding reads rule files or a clock.
-Creation diagnostics are returned in `driver.warnings`; the host decides how to display or log them.
+Python construction requires `rules=...`; JavaScript uses `Driver.handle(now, input)` with the same JSON tags.
+Rule object declaration order is part of the driver's rule fingerprint: missing, invalid or changed packs are
+rejected, and changing rules requires a replacement driver. Neither binding reads rule files or a clock.
 
 ## Layout
 
 ```
-rules/         canonical language-neutral rule pack and schema
-rust/engine/   rule interpreter, Tuya primitives, explicit driver state and C ABI
+rules/         canonical language-neutral rule pack; pack/ holds the override pack (not bundled)
+rust/engine/   rule interpreter, Tuya primitives, explicit driver state, C ABI and the rule-pack schema
 src/tuya2ildevice/
   native.py    ctypes transport, library loading and rule-pack cache
   driver.py    TuyaDriver: one device's state JSON through the engine
   io.py        inputs and outputs as data
 scripts/       generators (HA core tables, quirks, host units, Tuya categories) and build_rules.py, which folds
                their output into the rule pack
-scripts/rust/  export frozen Python-reference vectors and check the native ABI
 bindings/js/   a JavaScript binding over the WebAssembly build, with a smoke test
-tests/reference/  frozen pre-migration Python oracle; never used in production
 ```
 
 The engine reproduces Home Assistant core's `tuya` integration exactly, including its quirks, and the golden tests
 pin it: `tests/golden/golden.json` is core's own entity snapshots for every fixture. For a new HA core / tuya-device-handlers release, review its changes against the canonical JSON rules
-and golden tests. The frozen Python oracle is a baseline, not the source of future runtime rules.
+and golden tests.
 
 One deliberate exception: where Tuya's own category list (`scripts/data/tuya_categories.json`, generated by
 `scripts/gen_tuya_categories.py` from Tuya's standard instruction set page) disagrees with core, Tuya's list wins.

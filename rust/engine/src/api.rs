@@ -1,9 +1,10 @@
 use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value as V, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 struct Pack {
     rules: V,
     fingerprint: String,
@@ -37,108 +38,187 @@ fn quirk<'a>(input: &'a V, device: &V, rules: &'a V) -> &'a V {
         .filter(|v| !v.is_null())
         .unwrap_or(&rules["quirks"][s(&device["product_id"])])
 }
-pub fn request(input: &V) -> Result<V, String> {
-    if s(&input["op"]) == "merge_rules" {
-        return crate::rules::compose(input);
-    }
-    let registry = PACKS.get_or_init(|| Mutex::new(HashMap::new()));
-    if input["op"] == "install_rules" {
-        let rules = input["rules"].clone();
+/// Operations that need no rule pack.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Plain {
+    MergeRules,
+    InstallRules,
+    Carry,
+    Settings,
+    Merge,
+    StatusQuirk,
+    Check,
+    AdapterWrite,
+    StrategyWrite,
+}
+/// Operations that interpret a device with a rule pack (inline `rules` or a registered `rules_id`).
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Ruled {
+    Create,
+    Handle,
+    OnUpdate,
+    Unused,
+    QuirkSchema,
+    DeviceInfo,
+    Classify,
+    Read,
+    Write,
+    AdapterCreate,
+    AdapterRead,
+    StrategyRead,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Op {
+    Plain(Plain),
+    Ruled(Ruled),
+}
+/// The rule pack a request runs with.
+enum Rules<'a> {
+    Registered(Arc<Pack>),
+    Inline { rules: &'a V, fingerprint: String },
+}
+impl<'a> Rules<'a> {
+    fn resolve(input: &'a V) -> Result<Self, String> {
+        let rules = &input["rules"];
+        if rules.is_null() {
+            return registry()?
+                .get(s(&input["rules_id"]))
+                .cloned()
+                .map(Rules::Registered)
+                .ok_or_else(|| "rules are required or rules_id is not registered".into());
+        }
         if rules["version"] != 1 {
             return Err("unsupported rule version".into());
         }
-        let id = input["rules_id"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or("rules_id must be a nonempty string")?
-            .to_string();
-        let mut packs = registry.lock().map_err(|_| "rule registry poisoned")?;
-        if let Some(old) = packs.get(&id) {
-            if !ordered_eq(&old.rules, &rules) {
-                return Err("rule id already registered with different content".into());
-            }
-            return Ok(json!(true));
+        crate::rules::validate(rules)?;
+        Ok(Rules::Inline {
+            rules,
+            fingerprint: fingerprint(rules),
+        })
+    }
+    fn rules(&self) -> &V {
+        match self {
+            Rules::Registered(pack) => &pack.rules,
+            Rules::Inline { rules, .. } => rules,
         }
-        crate::rules::validate(&rules)?;
-        let fingerprint = fingerprint(&rules);
-        packs.insert(id, Arc::new(Pack { rules, fingerprint }));
+    }
+    fn fingerprint(&self) -> &str {
+        match self {
+            Rules::Registered(pack) => &pack.fingerprint,
+            Rules::Inline { fingerprint, .. } => fingerprint,
+        }
+    }
+}
+fn registry() -> Result<MutexGuard<'static, HashMap<String, Arc<Pack>>>, String> {
+    PACKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "rule registry poisoned".into())
+}
+fn install(input: &V) -> Result<V, String> {
+    let rules = input["rules"].clone();
+    if rules["version"] != 1 {
+        return Err("unsupported rule version".into());
+    }
+    let id = input["rules_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or("rules_id must be a nonempty string")?
+        .to_string();
+    let mut packs = registry()?;
+    if let Some(old) = packs.get(&id) {
+        if !ordered_eq(&old.rules, &rules) {
+            return Err("rule id already registered with different content".into());
+        }
         return Ok(json!(true));
     }
-    let needs_rules = matches!(
-        s(&input["op"]),
-        "create"
-            | "handle"
-            | "on_update"
-            | "unused"
-            | "quirk_schema"
-            | "device_info"
-            | "classify"
-            | "read"
-            | "write"
-            | "adapter_create"
-            | "adapter_read"
-            | "strategy_read"
-    );
-    let cached = if needs_rules && input["rules"].is_null() {
-        registry
-            .lock()
-            .map_err(|_| "rule registry poisoned")?
-            .get(s(&input["rules_id"]))
-            .cloned()
-    } else {
-        None
-    };
-    let rules = cached
-        .as_ref()
-        .map(|pack| &pack.rules)
-        .unwrap_or(&input["rules"]);
-    let inline_fingerprint;
-    let pack_fingerprint = if needs_rules {
-        if let Some(pack) = &cached {
-            pack.fingerprint.as_str()
-        } else {
-            if rules.is_null() {
-                return Err("rules are required or rules_id is not registered".into());
-            }
-            if rules["version"] != 1 {
-                return Err("unsupported rule version".into());
-            }
-            crate::rules::validate(rules)?;
-            inline_fingerprint = fingerprint(rules);
-            &inline_fingerprint
+    crate::rules::validate(&rules)?;
+    let fingerprint = fingerprint(&rules);
+    packs.insert(id, Arc::new(Pack { rules, fingerprint }));
+    Ok(json!(true))
+}
+pub fn request(input: &V) -> Result<V, String> {
+    let op: Op =
+        serde_json::from_value(input["op"].clone()).map_err(|_| "unknown engine operation")?;
+    match op {
+        Op::Plain(op) => plain(op, input),
+        Op::Ruled(op) => ruled(op, input, &Rules::resolve(input)?),
+    }
+}
+fn plain(op: Plain, input: &V) -> Result<V, String> {
+    match op {
+        Plain::MergeRules => crate::rules::compose(input),
+        Plain::InstallRules => install(input),
+        Plain::Carry => {
+            let mut d: Driver = decode(input, "driver")?;
+            d.carry(&decode(input, "old")?);
+            Ok(json!({"driver":d}))
         }
-    } else {
-        ""
-    };
-    match s(&input["op"]) {
-        "create" => {
-            let mut d = Driver::new(&input["device"], &input["options"], rules)?;
-            if cached.is_some() {
-                d.rules_id = s(&input["rules_id"]).into();
+        Plain::Settings => {
+            let d: Driver = decode(input, "driver")?;
+            Ok(d.settings_block())
+        }
+        Plain::Merge => {
+            let mut value = json!({});
+            for mapping in arr(&input["mappings"]) {
+                merge(&mut value, &mapping);
             }
-            d.rules_fingerprint = pack_fingerprint.into();
-            let mut warnings = vec![];
-            for (code, r) in obj(&d.block["remap"]) {
-                if truth(&r["invert"])
-                    && d.covers.iter().any(|c| {
-                        [&c.cur, &c.setp, &c.ins]
-                            .iter()
-                            .any(|r| r.as_ref().is_some_and(|r| r.code == code))
-                    })
-                {
-                    warnings.push(format!("remap.{code}.invert on a cover is deprecated: move it to the cover settings"));
+            Ok(value)
+        }
+        Plain::StatusQuirk => {
+            let mut st = input["status"].clone();
+            map_initial_status(&mut st, &input["quirk"]);
+            Ok(st)
+        }
+        Plain::Check => match check(
+            &input["descriptor"],
+            &input["state"],
+            s(&input["prop"]),
+            &input["value"],
+        ) {
+            Ok(v) => Ok(json!({"accept":v})),
+            Err((code, reason)) => Ok(json!({"reject":code,"reason":reason})),
+        },
+        Plain::AdapterWrite => {
+            let a: Adapter = decode(input, "adapter")?;
+            let mut present = vec![];
+            let mut missing = vec![];
+            for c in arr(&input["commands"]) {
+                if a.entries.values().any(|e| e.0 == s(&c["code"])) {
+                    present.push(c)
+                } else {
+                    missing.push(c["code"].clone());
                 }
             }
-            if d.block["converters"].get("cover_motion").is_some() {
-                warnings.push(
-                    "converters.cover_motion is deprecated: move it to the cover settings".into(),
-                );
-            }
-            Ok(json!({"driver":d,"warnings":warnings}))
+            let dps = if present.is_empty() {
+                json!({})
+            } else {
+                a.write(&present)?
+            };
+            Ok(json!([dps, missing]))
         }
-        "handle" => {
+        Plain::StrategyWrite => {
+            strategy_write(s(&input["name"]), &input["value"], &input["config"])
+        }
+    }
+}
+fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
+    let rules = pack.rules();
+    match op {
+        Ruled::Create => {
+            let mut d = Driver::new(&input["device"], &input["options"], rules)?;
+            if let Rules::Registered(_) = pack {
+                d.rules_id = s(&input["rules_id"]).into();
+            }
+            d.rules_fingerprint = pack.fingerprint().into();
+            Ok(json!({"driver":d}))
+        }
+        Ruled::Handle => {
             let mut d: Driver = decode(input, "driver")?;
-            if d.rules_fingerprint != pack_fingerprint {
+            if d.rules_fingerprint != pack.fingerprint() {
                 return Err("driver rules do not match the supplied rule pack".into());
             }
             let now = input["now"]
@@ -148,16 +228,7 @@ pub fn request(input: &V) -> Result<V, String> {
             let result = d.handle(now, &input["input"], rules)?;
             Ok(json!({"driver":d,"outputs":result}))
         }
-        "carry" => {
-            let mut d: Driver = decode(input, "driver")?;
-            d.carry(&decode(input, "old")?);
-            Ok(json!({"driver":d}))
-        }
-        "settings" => {
-            let d: Driver = decode(input, "driver")?;
-            Ok(d.settings_block())
-        }
-        "on_update" => {
+        Ruled::OnUpdate => {
             let p: Plan = decode(input, "plan")?;
             let mut slot = input["slot"].clone();
             let changed = &input["changed"];
@@ -191,14 +262,7 @@ pub fn request(input: &V) -> Result<V, String> {
             }
             Ok(json!({"slot":slot,"write_state":write,"fire":fire}))
         }
-        "merge" => {
-            let mut value = json!({});
-            for mapping in arr(&input["mappings"]) {
-                merge(&mut value, &mapping);
-            }
-            Ok(value)
-        }
-        "unused" => {
+        Ruled::Unused => {
             let a = Adapter {
                 entries: decode(input, "entries")?,
                 ..Default::default()
@@ -216,7 +280,7 @@ pub fn request(input: &V) -> Result<V, String> {
             entity::unused(&input["device"], &a, &mut plans, rules)?;
             Ok(json!(plans))
         }
-        "quirk_schema" => {
+        Ruled::QuirkSchema => {
             let mut d = input["device"].clone();
             ensure_tables(&mut d);
             let mut dpmap = d.get("dpmap").cloned().unwrap_or(json!({}));
@@ -224,26 +288,21 @@ pub fn request(input: &V) -> Result<V, String> {
             d["dpmap"] = dpmap;
             Ok(d)
         }
-        "status_quirk" => {
-            let mut st = input["status"].clone();
-            map_initial_status(&mut st, &input["quirk"]);
-            Ok(st)
-        }
-        "device_info" => Ok(device_info(
+        Ruled::DeviceInfo => Ok(device_info(
             &input["device"],
             quirk(input, &input["device"], rules),
             rules,
         )),
-        "classify" => {
+        Ruled::Classify => {
             let plans =
                 entity::classify(&input["device"], &input["env"], rules, &input["platforms"])?;
             Ok(json!(plans))
         }
-        "read" => {
+        Ruled::Read => {
             let p: Plan = decode(input, "plan")?;
             p.read(&input["status"], n(&input["total"]), rules)
         }
-        "write" => {
+        Ruled::Write => {
             let p: Plan = decode(input, "plan")?;
             Ok(json!(p.write(
                 s(&input["action"]),
@@ -252,46 +311,17 @@ pub fn request(input: &V) -> Result<V, String> {
                 rules
             )?))
         }
-        "check" => match check(
-            &input["descriptor"],
-            &input["state"],
-            s(&input["prop"]),
-            &input["value"],
-        ) {
-            Ok(v) => Ok(json!({"accept":v})),
-            Err((code, reason)) => Ok(json!({"reject":code,"reason":reason})),
-        },
-        "adapter_create" => Ok(json!(Adapter::new(
+        Ruled::AdapterCreate => Ok(json!(Adapter::new(
             &input["device"],
             &input["dpmap"],
             rules
         ))),
-        "adapter_read" => {
+        Ruled::AdapterRead => {
             let a: Adapter = decode(input, "adapter")?;
             Ok(a.read(&input["dps"], rules))
         }
-        "adapter_write" => {
-            let a: Adapter = decode(input, "adapter")?;
-            let mut present = vec![];
-            let mut missing = vec![];
-            for c in arr(&input["commands"]) {
-                if a.entries.values().any(|e| e.0 == s(&c["code"])) {
-                    present.push(c)
-                } else {
-                    missing.push(c["code"].clone());
-                }
-            }
-            let dps = if present.is_empty() {
-                json!({})
-            } else {
-                a.write(&present)?
-            };
-            Ok(json!([dps, missing]))
-        }
-        "strategy_read" => {
+        Ruled::StrategyRead => {
             strategy_read(s(&input["name"]), &input["value"], &input["config"], rules)
         }
-        "strategy_write" => strategy_write(s(&input["name"]), &input["value"], &input["config"]),
-        _ => Err("unknown engine operation".into()),
     }
 }

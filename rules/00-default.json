@@ -22448,7 +22448,6 @@
     "invert_position": false,
     "invert_set_position": false,
     "invert_control": false,
-    "infer_motion": true,
     "settle": 0,
     "invert_tilt": false,
     "position_from_target": false,
@@ -22670,18 +22669,6 @@
     "db_v1_frozen",
     "db_v1_alarm"
   ],
-  "motion_defaults": {
-    "command": "control",
-    "set_position": "percent_control",
-    "position": "percent_state",
-    "words": {
-      "open": "open",
-      "close": "close",
-      "stop": "stop"
-    },
-    "invert": false,
-    "settle": 0
-  },
   "motion_property": {
     "type": "select",
     "role": "cover_state",

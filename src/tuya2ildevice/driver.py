@@ -38,7 +38,6 @@ class TuyaDriver:
             if str(error).startswith("override:"):
                 raise OverrideError(str(error)) from error
             raise
-        self.warnings = result["warnings"]
         self.state = result["driver"]
 
     def call(self, op: str, **payload):

@@ -69,5 +69,5 @@ def test_canonical_rule_pack_validates_against_its_schema():
     from pathlib import Path
 
     import jsonschema
-    schema = json.loads((Path(__file__).resolve().parents[1] / 'rules/schema.json').read_text())
+    schema = json.loads((Path(__file__).resolve().parents[1] / 'rust/engine/schema.json').read_text())
     jsonschema.validate(rules(), schema)
