@@ -1,8 +1,0 @@
-{
- "_comment": "Where Tuya's own category list (_tuya_categories.json) decides, not HA core's tables. Hand-authored; the categories file is generated.",
- "switch_device_class": {
-  "_comment": "HA switch device_class by the standard's category NAME. Only replaces a socket-like class (outlet) that core's table gives a switch description; a description without one, and a category whose name is not listed, stay as core has them.",
-  "replaces": "outlet",
-  "by_name": {"Switch": "switch", "Socket": "outlet", "Power strip": "outlet"}
- }
-}
