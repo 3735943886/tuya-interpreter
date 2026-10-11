@@ -1,9 +1,32 @@
 use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
 use serde::de::DeserializeOwned;
 use serde_json::{Value as V, json};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-static PACKS: OnceLock<Mutex<HashMap<String, Arc<V>>>> = OnceLock::new();
+struct Pack {
+    rules: V,
+    fingerprint: String,
+}
+static PACKS: OnceLock<Mutex<HashMap<String, Arc<Pack>>>> = OnceLock::new();
+fn fingerprint(rules: &V) -> String {
+    format!("{:x}", Sha256::digest(rules.to_string().as_bytes()))
+}
+fn ordered_eq(left: &V, right: &V) -> bool {
+    match (left, right) {
+        (V::Object(left), V::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|((lk, lv), (rk, rv))| lk == rk && ordered_eq(lv, rv))
+        }
+        (V::Array(left), V::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(lv, rv)| ordered_eq(lv, rv))
+        }
+        _ => left == right,
+    }
+}
 fn decode<T: DeserializeOwned>(input: &V, field: &str) -> Result<T, String> {
     serde_json::from_value(input[field].clone()).map_err(|e| format!("{field}: {e}"))
 }
@@ -24,19 +47,39 @@ pub fn request(input: &V) -> Result<V, String> {
         if rules["version"] != 1 {
             return Err("unsupported rule version".into());
         }
-        let id = s(&input["rules_id"]).to_string();
+        let id = input["rules_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("rules_id must be a nonempty string")?
+            .to_string();
         let mut packs = registry.lock().map_err(|_| "rule registry poisoned")?;
         if let Some(old) = packs.get(&id) {
-            if **old != rules {
+            if !ordered_eq(&old.rules, &rules) {
                 return Err("rule id already registered with different content".into());
             }
             return Ok(json!(true));
         }
         crate::rules::validate(&rules)?;
-        packs.insert(id, Arc::new(rules));
+        let fingerprint = fingerprint(&rules);
+        packs.insert(id, Arc::new(Pack { rules, fingerprint }));
         return Ok(json!(true));
     }
-    let cached = if input["rules"].is_null() {
+    let needs_rules = matches!(
+        s(&input["op"]),
+        "create"
+            | "handle"
+            | "on_update"
+            | "unused"
+            | "quirk_schema"
+            | "device_info"
+            | "classify"
+            | "read"
+            | "write"
+            | "adapter_create"
+            | "adapter_read"
+            | "strategy_read"
+    );
+    let cached = if needs_rules && input["rules"].is_null() {
         registry
             .lock()
             .map_err(|_| "rule registry poisoned")?
@@ -45,11 +88,35 @@ pub fn request(input: &V) -> Result<V, String> {
     } else {
         None
     };
-    let rules = cached.as_deref().unwrap_or(&input["rules"]);
+    let rules = cached
+        .as_ref()
+        .map(|pack| &pack.rules)
+        .unwrap_or(&input["rules"]);
+    let inline_fingerprint;
+    let pack_fingerprint = if needs_rules {
+        if let Some(pack) = &cached {
+            pack.fingerprint.as_str()
+        } else {
+            if rules.is_null() {
+                return Err("rules are required or rules_id is not registered".into());
+            }
+            if rules["version"] != 1 {
+                return Err("unsupported rule version".into());
+            }
+            crate::rules::validate(rules)?;
+            inline_fingerprint = fingerprint(rules);
+            &inline_fingerprint
+        }
+    } else {
+        ""
+    };
     match s(&input["op"]) {
         "create" => {
             let mut d = Driver::new(&input["device"], &input["options"], rules)?;
-            d.rules_id = s(&input["rules_id"]).into();
+            if cached.is_some() {
+                d.rules_id = s(&input["rules_id"]).into();
+            }
+            d.rules_fingerprint = pack_fingerprint.into();
             let mut warnings = vec![];
             for (code, r) in obj(&d.block["remap"]) {
                 if truth(&r["invert"])
@@ -71,6 +138,9 @@ pub fn request(input: &V) -> Result<V, String> {
         }
         "handle" => {
             let mut d: Driver = decode(input, "driver")?;
+            if d.rules_fingerprint != pack_fingerprint {
+                return Err("driver rules do not match the supplied rule pack".into());
+            }
             let now = input["now"]
                 .as_f64()
                 .filter(|v| v.is_finite())

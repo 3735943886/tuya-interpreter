@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag like `v0.1.0` to build and publish that version to PyPI.
-# `pyproject.toml` uses hatch-vcs: the package version is derived from this tag (the `v` prefix is
+# `hatch_version.py` uses setuptools-scm: the package version is derived from this tag (the `v` prefix is
 # stripped automatically), so there is nothing to bump by hand before tagging.
 #
 # One-time setup on PyPI (no token needed -- this uses Trusted Publishing/OIDC):
@@ -16,6 +16,7 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "hatch_build.py"
+      - "hatch_version.py"
       - "pyproject.toml"
       - "rust/**"
       - "rules/**"

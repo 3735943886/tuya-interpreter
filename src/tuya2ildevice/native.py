@@ -43,7 +43,8 @@ def _call(request):
 
 
 def register_rules(pack):
-    identifier = hashlib.sha256(json.dumps(pack, sort_keys=True).encode()).hexdigest()
+    # Object order is executable rule data (platforms, bindings and programs).
+    identifier = hashlib.sha256(json.dumps(pack, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     _call({'op': 'install_rules', 'rules_id': identifier, 'rules': pack})
     return identifier
 

@@ -173,7 +173,11 @@ or panic crosses the ABI. Every response is `{"ok": true, "value": ...}` or `{"o
 
 Supply `rules` with each request, or register an immutable pack once with
 `{"op": "install_rules", "rules_id": "<content id>", "rules": pack}` and pass `rules_id`. IDs cannot be reused for
-different contents. The registry caches rules, never device state.
+different contents, including object declaration order. Pack IDs and content fingerprints preserve that order:
+platform classification and expression bindings execute in declaration order. Registered and inline packs are
+validated by the same schema. Operations that interpret devices require a pack; an unknown ID is an error.
+`handle` verifies the ordered content fingerprint saved at creation, so replacing rules requires a new driver.
+The registry caches rules, never device state.
 
 | `op` | Request fields | Result |
 | --- | --- | --- |
@@ -189,6 +193,7 @@ different contents. The registry caches rules, never device state.
 Driver state is explicit JSON: DP values, published values, delta totals, cover motion, converter state, settings
 and timer names. No sockets or clocks are read; serialize the returned driver to continue in another process with
 the same engine and pack. Internal driver state is version-specific, not a durable storage format.
+States created before the rule fingerprint was introduced must be recreated from the device and rule pack.
 
 Input/output tags are snake_case: `connected`, `disconnected`, `message`, `command`, `timer`; outputs `descriptor`,
 `value`, `absent`, `event`, `send_message`, `reject`, `set_timer`, `cancel_timer`, `settings_changed`.
@@ -234,6 +239,11 @@ using the `pypi` Trusted Publishing environment. Pull requests affecting the
 release inputs and `workflow_dispatch` build and test without publishing.
 PyPI's Trusted Publisher must reference this repository, `release.yml` and the
 `pypi` environment. No release tag is created by the workflow.
+
+`hatch_version.py` derives versions from Git via setuptools-scm. An exact tag keeps its version;
+commits after `v0.4.0.dev1` advance its development number (`+3` commits gives `0.4.0.dev4`).
+Commits after a final release use the next patch development version. Source archives retain their
+recorded version through `PKG-INFO`, so building a wheel from an sdist does not require Git metadata.
 
 `TUYA_ENGINE_BUNDLED_LIBRARY` lets the build hook package a prebuilt library
 (relative paths resolve against the project root). Without it Cargo builds the

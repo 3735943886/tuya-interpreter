@@ -313,6 +313,8 @@ pub struct Driver {
     /// The registered rule pack the driver was made with (empty for inline rules).
     #[serde(default)]
     pub rules_id: String,
+    /// Ordered rule content identity; driver state is specific to this pack.
+    pub rules_fingerprint: String,
 }
 fn own(block: &V, group: &Option<String>) -> V {
     let c = &block["cover"];
@@ -920,6 +922,7 @@ impl Driver {
             seq: 0,
             machines,
             rules_id: String::new(),
+            rules_fingerprint: String::new(),
         })
     }
     /// Take over what `old` counted: delta totals of the same DPs, and the message sequence.

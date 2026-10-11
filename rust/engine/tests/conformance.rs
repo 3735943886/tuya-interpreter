@@ -151,10 +151,77 @@ fn call(request: Value) -> Value {
 }
 
 #[test]
+fn drivers_require_valid_matching_ordered_rules() {
+    let rules: Value =
+        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
+    let device = json!({"id":"rule-test"});
+    for context in [
+        json!({}),
+        json!({"rules_id":"missing"}),
+        json!({"rules":{"version":1}}),
+    ] {
+        let mut request = json!({"op":"create","device":device,"options":{}});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(context.as_object().unwrap().clone());
+        assert_eq!(call(request)["ok"], false);
+    }
+    assert_eq!(
+        call(json!({"op":"install_rules","rules_id":"rule-test","rules":rules}))["ok"],
+        true
+    );
+    let driver =
+        call(json!({"op":"create","device":device,"rules_id":"rule-test"}))["value"]["driver"]
+            .clone();
+    let mut reversed = rules.clone();
+    reversed["platforms"] = Value::Object(
+        rules["platforms"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .rev()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    );
+    assert_eq!(
+        call(json!({"op":"install_rules","rules_id":"rule-test","rules":reversed}))["ok"],
+        false
+    );
+    assert_eq!(
+        call(json!({"op":"install_rules","rules_id":"rule-test-reversed","rules":reversed}))["ok"],
+        true
+    );
+    for context in [
+        json!({}),
+        json!({"rules_id":"missing"}),
+        json!({"rules_id":"rule-test-reversed"}),
+        json!({"rules":reversed}),
+    ] {
+        let mut request =
+            json!({"op":"handle","driver":driver,"input":{"type":"connected"},"now":0});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(context.as_object().unwrap().clone());
+        assert_eq!(call(request)["ok"], false);
+    }
+    assert_eq!(
+        call(
+            json!({"op":"handle","driver":driver,"input":{"type":"connected"},"now":0,"rules":rules})
+        )["ok"],
+        true
+    );
+}
+
+#[test]
 fn malformed_codec_inputs_return_errors_without_panicking() {
+    let rules: Value =
+        serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
     let scene = format!("{}{}", "a".repeat(27), "é");
-    let response =
-        call(json!({"op":"strategy_read","name":"dj_v2_scene_alg","value":scene,"config":{}}));
+    let response = call(
+        json!({"op":"strategy_read","name":"dj_v2_scene_alg","value":scene,"config":{},"rules":rules}),
+    );
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"], "invalid scene");
     let response = call(

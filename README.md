@@ -307,6 +307,9 @@ The driver never requests bridge registration or automatic `get` operations.
 This is a breaking API change: `Hub`, `IlTopics`, MQTT actions, `op: hub`, `op: il`, and rule-file loaders have
 been removed. Replace `Hub` calls with per-device `handle` calls and map their data in your host adapter.
 Python construction requires `rules=...`. JavaScript uses `Driver.handle(now, input)` with the same JSON tags.
+Rule object declaration order is preserved in the cache and driver fingerprint. Missing, invalid or changed
+packs are rejected; changing rules requires a replacement driver. Recreate previously serialized driver states,
+which lack the new fingerprint, from their device and rule pack.
 Native library loading remains binding infrastructure; neither binding reads rule files or a clock.
 Creation diagnostics are returned in `driver.warnings`; the host decides how to display or log them.
 

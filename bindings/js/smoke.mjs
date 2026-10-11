@@ -22,4 +22,11 @@ assert.deepEqual(plug.handle(2, { type: "command", prop: "switch_1", value: fals
   [{ type: "send_message", channel: "set", json: { dps: { 1: false } } }]);
 assert.equal(plug.handle(3, { type: "command", prop: "missing", value: true })[0].type, "reject");
 assert.throws(() => plug.handle(undefined, { type: "connected" }), TypeError);
+assert.throws(() => new Driver(engine, "missing", device), /rules/);
+assert.throws(() => engine.call({ op: "create", rules: { version: 1 }, device }), /rules/);
+const other = JSON.parse(await readFile(new URL("rules/00-default.json", root)));
+other.constants.manufacturer = "Other vendor";
+engine.install(other, "other");
+assert.throws(() => engine.call({ op: "handle", rules_id: "other", driver: plug.state,
+  input: { type: "connected" }, now: 4 }), /do not match/);
 console.log("ok: bidirectional transport-independent driver from JavaScript");

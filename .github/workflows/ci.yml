@@ -24,7 +24,7 @@ jobs:
       - run: cargo test --locked --manifest-path rust/Cargo.toml
       - run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - run: pip install -e ".[test]"
-      - run: pip install ruff==0.16.8 && ruff check src tests
+      - run: pip install ruff==0.16.8 && ruff check src tests hatch_version.py
       - run: python -m pytest -q
 
   portable:
