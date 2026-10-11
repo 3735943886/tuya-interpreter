@@ -1,4 +1,4 @@
-use crate::{adapter::*, classify, data::*, driver::Driver, driver::check, plan::Plan};
+use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
 use serde::de::DeserializeOwned;
 use serde_json::{Value as V, json};
 use std::collections::HashMap;
@@ -7,12 +7,18 @@ static PACKS: OnceLock<Mutex<HashMap<String, Arc<V>>>> = OnceLock::new();
 fn decode<T: DeserializeOwned>(input: &V, field: &str) -> Result<T, String> {
     serde_json::from_value(input[field].clone()).map_err(|e| format!("{field}: {e}"))
 }
+/// The request's explicit quirk, else the rule pack's quirk for the device's product.
+fn quirk<'a>(input: &'a V, device: &V, rules: &'a V) -> &'a V {
+    input
+        .get("quirk")
+        .filter(|v| !v.is_null())
+        .unwrap_or(&rules["quirks"][s(&device["product_id"])])
+}
 pub fn request(input: &V) -> Result<V, String> {
-    if input["op"] == "load_rules" {
-        return crate::rules::load(input);
-    }
-    if input["op"] == "merge_rules" {
-        return crate::rules::compose(&input["base"], &arr(&input["layers"]));
+    match s(&input["op"]) {
+        "merge_rules" => return crate::rules::compose(input),
+        "il" => return crate::il::request(input),
+        _ => {}
     }
     let registry = PACKS.get_or_init(|| Mutex::new(HashMap::new()));
     if input["op"] == "install_rules" {
@@ -43,8 +49,10 @@ pub fn request(input: &V) -> Result<V, String> {
     };
     let rules = cached.as_deref().unwrap_or(&input["rules"]);
     match s(&input["op"]) {
+        "hub" => crate::hub::request(input, rules),
         "create" => {
-            let d = Driver::new(&input["device"], &input["options"], rules)?;
+            let mut d = Driver::new(&input["device"], &input["options"], rules)?;
+            d.rules_id = s(&input["rules_id"]).into();
             let mut warnings = vec![];
             for (code, r) in obj(&d.block["remap"]) {
                 if truth(&r["invert"])
@@ -67,50 +75,11 @@ pub fn request(input: &V) -> Result<V, String> {
         "handle" => {
             let mut d: Driver = decode(input, "driver")?;
             let result = d.handle(n(&input["now"]), &input["input"], rules)?;
-            Ok(json!({"driver":d,"outputs":result["outputs"],"callbacks":result["callbacks"]}))
-        }
-        "converted" => {
-            let mut d: Driver = decode(input, "driver")?;
-            let mut out = vec![];
-            d.converted(n(&input["index"]) as usize, &input["result"], &mut out);
-            Ok(json!({"driver":d,"outputs":out}))
-        }
-        "write_callback" => {
-            let d: Driver = decode(input, "driver")?;
-            let commands = if input["commands"].is_object() {
-                obj(&input["commands"])
-                    .iter()
-                    .map(|(code, v)| json!({"code":code,"value":v}))
-                    .collect()
-            } else {
-                arr(&input["commands"])
-            };
-            let output = match d.adapter.write(&commands) {
-                Ok(dps) => json!({"type":"send_message","channel":"set","json":{"dps":dps}}),
-                Err(e) => {
-                    json!({"type":"reject","prop":input["prop"],"code":if e.starts_with("unsupported:"){"unsupported"}else{"invalid_value"},"reason":e})
-                }
-            };
-            Ok(json!({"outputs":[output]}))
+            Ok(json!({"driver":d,"outputs":result}))
         }
         "carry" => {
             let mut d: Driver = decode(input, "driver")?;
-            let old: Driver = decode(input, "old")?;
-            d.seq = d.seq.max(old.seq);
-            for (name, b) in d.assembly.bindings.iter_mut() {
-                if let Some(ob) = old.assembly.bindings.get(name) {
-                    let a = d.plans.get(b.plan);
-                    let o = old.plans.get(ob.plan);
-                    if let (Some(a), Some(o)) = (a, o)
-                        && a.slot_kind.as_deref() == Some("delta")
-                        && o.slot_kind.as_deref() == Some("delta")
-                        && a.depends_on == o.depends_on
-                    {
-                        b.total = ob.total;
-                        b.last_ts = ob.last_ts.clone();
-                    }
-                }
-            }
+            d.carry(&decode(input, "old")?);
             Ok(json!({"driver":d}))
         }
         "settings" => {
@@ -130,7 +99,7 @@ pub fn request(input: &V) -> Result<V, String> {
                     .first()
                     .is_some_and(|c| codes(changed).contains(c))
                 {
-                    fire = p.read(&input["status"], 0.0, rules)["event"].clone();
+                    fire = p.read(&input["status"], 0.0, rules)?["event"].clone();
                     write = truth(&fire);
                 }
             } else if p.slot_kind.as_deref() == Some("delta") {
@@ -151,30 +120,12 @@ pub fn request(input: &V) -> Result<V, String> {
             }
             Ok(json!({"slot":slot,"write_state":write,"fire":fire}))
         }
-        "resolve" => Ok(json!(resolve(
-            &input["device"],
-            &codes(&input["reference"]["candidates"]),
-            s(&input["kind"]),
-            input["reference"]["source"] == "function_first"
-        )?)),
         "merge" => {
             let mut value = json!({});
             for mapping in arr(&input["mappings"]) {
                 merge(&mut value, &mapping);
             }
             Ok(value)
-        }
-        "override_validate" => {
-            crate::driver::validate(&input["block"], rules)?;
-            let known = codes(&input["converter_types"]);
-            for name in obj(&input["block"]["converters"]).keys() {
-                if !["cover_motion", "declarative"].contains(&name.as_str())
-                    && !known.contains(name)
-                {
-                    return Err(format!("override: unknown converter {name}"));
-                }
-            }
-            Ok(input["block"].clone())
         }
         "unused" => {
             let a = Adapter {
@@ -191,255 +142,35 @@ pub fn request(input: &V) -> Result<V, String> {
                     .collect(),
                 ..a
             };
-            crate::driver::unused(&input["device"], &a, &mut plans)?;
+            entity::unused(&input["device"], &a, &mut plans, rules)?;
             Ok(json!(plans))
-        }
-        "assemble" => {
-            let mut plans: Vec<Plan> = decode(input, "plans")?;
-            Ok(json!(crate::assembly::assemble(
-                &input["device"],
-                &mut plans,
-                &input["info"],
-                truth(&input["allow_hazardous"]),
-                rules
-            )))
-        }
-        "binding_read" => {
-            let binding: crate::assembly::Binding = decode(input, "binding")?;
-            let plan: Plan = decode(input, "plan")?;
-            Ok(binding.read(&plan, &input["status"], rules, &input["definition"]))
-        }
-        "binding_write" => {
-            let binding: crate::assembly::Binding = decode(input, "binding")?;
-            let plan: Plan = decode(input, "plan")?;
-            Ok(json!(binding.write(
-                &plan,
-                &input["value"],
-                &input["status"],
-                rules
-            )?))
-        }
-        "motion_create" => {
-            let mut cfg = rules["motion_defaults"].clone();
-            for k in obj(&input["config"]).keys() {
-                if cfg.get(k).is_none() {
-                    return Err(format!("unknown cover_motion config {k}"));
-                }
-            }
-            merge(&mut cfg, &input["config"]);
-            let prop = input.get("prop").cloned().unwrap_or(json!("cover_state"));
-            let m = crate::driver::Motion::from_config(
-                s(&prop).into(),
-                input["group"].as_str().map(String::from),
-                &cfg,
-                input.get("mode").map(s).unwrap_or("inferred").into(),
-                truth(&input["invert_report"]),
-            );
-            let mut def = rules["motion_property"].clone();
-            if input["group"].is_string() {
-                def["group"] = input["group"].clone();
-            }
-            Ok(json!({"motion":m,"props":{s(&prop):def}}))
-        }
-        "motion_update" => {
-            let mut m: crate::driver::Motion = decode(input, "motion")?;
-            let (values, timer) = m.update(
-                &input["codes"],
-                &codes(&input["changed"]),
-                truth(&input["active"]),
-                truth(&input["timer"]),
-            );
-            Ok(
-                json!({"motion":m,"result":{"values":values,"timers":if let Some(t)=timer{json!({"settle":t})}else{json!({})}}}),
-            )
-        }
-        "motion_reset" => {
-            let mut m: crate::driver::Motion = decode(input, "motion")?;
-            m.reset();
-            Ok(json!(m))
         }
         "quirk_schema" => {
             let mut d = input["device"].clone();
-            for t in ["function", "status_range", "status"] {
-                if !d[t].is_object() {
-                    d[t] = json!({});
-                }
-            }
+            ensure_tables(&mut d);
             let mut dpmap = d.get("dpmap").cloned().unwrap_or(json!({}));
-            let quirk = input
-                .get("quirk")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .unwrap_or_else(|| rules["quirks"][s(&d["product_id"])].clone());
-            for op in arr(&quirk["ops"]) {
-                if op.get("when").is_some() && !truth(&cond(&op["when"], &d["status"])) {
-                    continue;
-                }
-                patch_op(&mut d, &mut dpmap, &op);
-            }
+            apply_quirk(&mut d, &mut dpmap, quirk(input, &input["device"], rules));
             d["dpmap"] = dpmap;
             Ok(d)
         }
         "status_quirk" => {
             let mut st = input["status"].clone();
-            for op in arr(&input["quirk"]["ops"]) {
-                if op["op"] == "MapInitialStatus" {
-                    let code = s(&op["code"]);
-                    for pair in arr(&op["mapping"]) {
-                        if eq(&st[code], &pair[0]) {
-                            st[code] = pair[1].clone();
-                            break;
-                        }
-                    }
-                }
-            }
+            map_initial_status(&mut st, &input["quirk"]);
             Ok(st)
         }
-        "device_info" => {
-            let quirk = input
-                .get("quirk")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .unwrap_or_else(|| rules["quirks"][s(&input["device"]["product_id"])].clone());
-            let meta = &quirk["meta"];
-            Ok(if truth(&meta["manufacturer"]) {
-                json!({"manufacturer":meta["manufacturer"],"model":meta["model"],"model_id":meta["model_id"]})
-            } else {
-                default_device_info(&input["device"], rules)
-            })
-        }
-        "unit_policy" => {
-            let mut id = json!({});
-            let desc = json!({"native_unit_of_measurement":input["fallback_unit"],"suggested_unit_of_measurement":input["suggested_unit"]});
-            classify::unit(
-                s(&input["platform"]),
-                &json!({"status":{"temp_unit_convert":input["temp_unit_convert"]}}),
-                &json!({"allowed_units":input["allowed_units"]}),
-                &desc,
-                &mut id,
-                input["device_class"].clone(),
-                input["dp_unit"].clone(),
-                input["suggested_unit"].clone(),
-                rules,
-            );
-            Ok(id)
-        }
-        "codec" => {
-            let v = &input["value"];
-            match s(&input["name"]) {
-                "json_loads" => Ok(if v.is_string() { parse(v) } else { V::Null }),
-                "b64_decode" => Ok(json!(b64(v))),
-                "electricity_bytes" => Ok(electricity(
-                    &items(v).iter().map(|b| n(b) as u8).collect::<Vec<_>>(),
-                )),
-                "electricity_hex" => Ok(hexbytes(s(v)).map(|b| electricity(&b)).unwrap_or(V::Null)),
-                "hsv_hex_decode" => {
-                    let text = s(v);
-                    Ok(if text.len() == 12 {
-                        hexbytes(text)
-                            .map(|b| json!([uint(&b[..2]), uint(&b[2..4]), uint(&b[4..])]))
-                            .unwrap_or(V::Null)
-                    } else {
-                        V::Null
-                    })
-                }
-                _ => Err("unknown codec".into()),
-            }
-        }
-        "value_op" => {
-            let name = s(&input["name"]);
-            let spec = input["spec"].clone();
-            let value = &input["value"];
-            let r = Role {
-                code: "value".into(),
-                kind: if name.contains("bool") {
-                    "Boolean"
-                } else if name.contains("enum") {
-                    "Enum"
-                } else {
-                    "Integer"
-                }
-                .into(),
-                spec,
-                report_type: V::Null,
-            };
-            let st = json!({"value":value});
-            match name {
-                "validate_bool_read" | "validate_enum_read" | "validate_int_read" => {
-                    Ok(r.read(&st))
-                }
-                "validate_bool_write" | "validate_enum_write" | "validate_int_write" => {
-                    r.write(value)
-                }
-                "scale_value" => Ok(json!(n(value) / r.scale())),
-                "scaled_range" => Ok(json!([r.lo() / r.scale(), r.hi() / r.scale()])),
-                "remap" => {
-                    let mut v = n(value);
-                    let range = &input["range"];
-                    if input["reverse"] == true {
-                        v = n(&range[1]) - v + n(&range[0]);
-                    }
-                    Ok(json!(remap(
-                        v,
-                        n(&range[0]),
-                        n(&range[1]),
-                        n(&range[2]),
-                        n(&range[3])
-                    )))
-                }
-                "remap_read" => {
-                    let v = r.read(&st);
-                    if v.is_null() {
-                        return Ok(V::Null);
-                    }
-                    let mut v = n(&v);
-                    if input["reverse"] == true {
-                        v = r.hi() / r.scale() - v + r.lo() / r.scale();
-                    }
-                    Ok(number(
-                        remap(
-                            v,
-                            r.lo() / r.scale(),
-                            r.hi() / r.scale(),
-                            n(&input["target"][0]),
-                            n(&input["target"][1]),
-                        )
-                        .round_ties_even(),
-                    ))
-                }
-                "remap_write" => {
-                    let lo = n(&input["target"][0]);
-                    let hi = n(&input["target"][1]);
-                    let mut v = n(value);
-                    if input["reverse"] == true {
-                        v = hi - v + lo;
-                    }
-                    r.write(&number(remap(
-                        v,
-                        lo,
-                        hi,
-                        r.lo() / r.scale(),
-                        r.hi() / r.scale(),
-                    )))
-                }
-                _ => Err("unknown value op".into()),
-            }
-        }
-        "build" => Ok(json!(classify::build(
-            s(&input["platform"]),
+        "device_info" => Ok(device_info(
             &input["device"],
-            &input["env"],
-            &input["description"],
-            rules
-        )?)),
+            quirk(input, &input["device"], rules),
+            rules,
+        )),
         "classify" => {
             let plans =
-                classify::classify(&input["device"], &input["env"], rules, &input["platforms"])?;
+                entity::classify(&input["device"], &input["env"], rules, &input["platforms"])?;
             Ok(json!(plans))
         }
         "read" => {
             let p: Plan = decode(input, "plan")?;
-            Ok(p.read(&input["status"], n(&input["total"]), rules))
+            p.read(&input["status"], n(&input["total"]), rules)
         }
         "write" => {
             let p: Plan = decode(input, "plan")?;
@@ -485,28 +216,6 @@ pub fn request(input: &V) -> Result<V, String> {
                 a.write(&present)?
             };
             Ok(json!([dps, missing]))
-        }
-        "strategy_code" => Ok(json!(strategy_code(&input["meta"]))),
-        "remap" => {
-            let code = "value";
-            let a = Adapter {
-                remaps: json!({code:input["remap"]}),
-                ..Default::default()
-            };
-            let mut v = input["value"].clone();
-            let alias = &input["remap"]["alias"];
-            if input["direction"] == "read" {
-                if v.is_string() {
-                    v = alias.get(s(&v)).cloned().unwrap_or(v);
-                }
-                v = a.flip(code, &v);
-            } else {
-                v = a.flip(code, &v);
-                if let Some((dev, _)) = obj(alias).iter().find(|(_, std)| **std == v) {
-                    v = json!(dev);
-                }
-            }
-            Ok(v)
         }
         "strategy_read" => {
             strategy_read(s(&input["name"]), &input["value"], &input["config"], rules)

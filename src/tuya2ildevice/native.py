@@ -1,4 +1,4 @@
-"""C ABI transport and cached rule-pack loading; contains no conversion rules."""
+"""C ABI transport, and the rule files read for the engine (which reads none itself); no conversion rules."""
 from __future__ import annotations
 
 import ctypes
@@ -29,16 +29,56 @@ def library():
 
 
 def rule_paths(paths=(), *, bundled_path=None):
-    """Resolve locations without choosing or ordering individual JSON files."""
+    """The bundled rule directory, then `paths`."""
     bundled = Path(__file__).parent / 'rules'
     checkout = Path(__file__).resolve().parents[2] / 'rules'
     location = bundled_path or (bundled if bundled.is_dir() else checkout)
-    return [str(location), *[str(p) for p in paths]]
+    return [Path(location), *[Path(p) for p in paths]]
+
+
+def rule_files(locations):
+    """Every rule file of `locations` (a file, or a directory's visible `*.json` but `schema.json`, not recursing), in
+    filename byte order; equal names keep the location order."""
+    files = []
+    for location in map(Path, locations):
+        if location.is_file():
+            files.append(location)
+        elif location.is_dir():
+            files += [p for p in location.iterdir()
+                      if p.is_file() and p.suffix == '.json' and p.name != 'schema.json' and p.name[0] not in '._']
+    return sorted(files, key=lambda p: os.fsencode(p.name))
+
+
+def merge_rule_files(locations, *, tolerant=False):
+    """Read the rule files of `locations` and merge them in the engine: `{rules, sources, warnings}`. With `tolerant`,
+    a file that cannot be read or would make the rules invalid is reported in `warnings` and left out."""
+    files = rule_files(locations)
+    layers, warnings = [], []
+    for path in files:
+        try:
+            layers.append({'source': str(path), 'rules': json.loads(path.read_text(encoding='utf-8'))})
+        except (OSError, ValueError) as error:
+            if not tolerant:
+                raise ValueError(f'{path}: {error}') from error
+            warnings.append(f'{path.name}: {error}')
+    result = _call({'op': 'merge_rules', 'layers': layers, 'tolerant': tolerant})
+    names = {str(p): p.name for p in files}
+
+    def short(warning):
+        source, _, message = warning.partition(': ')
+        return f'{names.get(source, source)}: {message}'
+    result['warnings'] = warnings + [short(w) for w in result['warnings']]
+    return result
 
 
 def load_rules(paths=(), *, bundled_path=None):
-    """Pass rule locations to the native filename-ordered loader."""
-    return _call({'op': 'load_rules', 'paths': rule_paths(paths, bundled_path=bundled_path)})['rules']
+    """The bundled rules with the rule files of `paths` over them."""
+    return merge_rule_files(rule_paths(paths, bundled_path=bundled_path))['rules']
+
+
+def load_rules_tolerant(paths=(), *, bundled_path=None):
+    """Like `load_rules`, but a file that does not load is left out: `{rules, sources, warnings}`."""
+    return merge_rule_files(rule_paths(paths, bundled_path=bundled_path), tolerant=True)
 
 
 @functools.cache

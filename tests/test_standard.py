@@ -1,7 +1,8 @@
-"""Tuya's own category list applied over core's tables (tuya/standard.py, tables/_tuya_*.json)."""
+"""Tuya's own category list applied over core's tables when the rule pack is built (scripts/standard.py)."""
 import json
 
-from tuya2ildevice.tuya import standard
+import standard
+from engine import table
 
 
 def test_the_category_list_is_tuyas_own_and_complete():
@@ -38,7 +39,6 @@ def test_apply_changes_only_a_switch_tables_socket_like_classes():
     assert standard.apply("select", other) == tables
 
 
-def test_the_loaded_table_carries_it():
-    from tuya2ildevice.tuya.runtime import load_table
-    kg = load_table("switch")["SWITCHES"]["kg"]
+def test_the_rule_pack_carries_it():
+    kg = table("switch")["kg"]
     assert {d["device_class"] for d in kg if "device_class" in d} == {"switch"}

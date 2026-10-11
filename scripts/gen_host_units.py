@@ -1,6 +1,6 @@
-"""Dump HA's per-device-class allowed units -> src/tuya2ildevice/tuya/data/host_units.json (HostEnv.allowed_units, spec 5.3). Needs `homeassistant`.
+"""Dump HA's per-device-class allowed units (HostEnv.allowed_units, spec 5.3). Needs `homeassistant`.
 
-Usage: python gen_host_units.py <out.json>"""
+Usage: python gen_host_units.py <out.json>; then python build_rules.py --host-units <out.json>"""
 import enum
 import json
 import sys

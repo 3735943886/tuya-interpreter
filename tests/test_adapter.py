@@ -7,9 +7,7 @@ import random
 
 import fixtures
 import pytest
-
-from tuya2ildevice.tuya.adapter import STRATEGIES, Adapter
-from tuya2ildevice.tuya.model import DpSpec
+from engine import STRATEGIES, Adapter, NoWritePath, dp
 
 here = pathlib.Path(__file__).parent / "golden"
 try:
@@ -49,7 +47,7 @@ def test_read_matches_sdk():
         if not ls:
             continue
         rng = {k: {"type": v["type"], "values": v["values"]} for k, v in d["status_range"].items()}
-        ad = Adapter.from_local_strategy(ls, {k: DpSpec(k, v["type"], v["values"]) for k, v in d["status_range"].items()})
+        ad = Adapter.from_local_strategy(ls, {k: dp(v["type"], v["values"]) for k, v in d["status_range"].items()})
         for dpid, meta in ls.items():
             if meta["value_convert"] not in STRATEGIES:
                 continue
@@ -65,14 +63,9 @@ def test_read_matches_sdk():
 
 
 def test_write_roundtrips():
-    from tuya2ildevice.tuya.adapter import (
-        _r_color,
-        _r_contr,
-        _r_scene,
-        _w_color,
-        _w_contr,
-        _w_scene,
-    )
+    _r_color, _w_color = STRATEGIES["dj_v2_color_alg"]
+    _r_contr, _w_contr = STRATEGIES["dj_v2_contr_alg"]
+    _r_scene, _w_scene = STRATEGIES["dj_v2_scene_alg"]
     for raw in ("00b403e803e8", "012c00ff0010"):
         assert _w_color(_r_color(raw, {}), {}) == raw
     for raw in ("1" + "00b4" + "03e8" + "03e8" + "0064" + "0100", "0" + "0000" * 5):
@@ -93,7 +86,7 @@ def test_statusformat_key_and_unsupported_and_enum_guard():
           "9": {"value_convert": "db_v1_data", "status_code": "t", "config_item": {"statusFormat": '{"timer":"$"}'}},
           "3": {"value_convert": "default", "status_code": "mode",
                 "config_item": {"statusFormat": {"mode": "$"}, "valueType": "Enum", "valueDesc": '{"range":["a","b"]}'}}}
-    ad = Adapter.from_local_strategy(ls, {"mode": DpSpec("mode", "Enum", '{"range":["a","b"]}')})
+    ad = Adapter.from_local_strategy(ls, {"mode": dp("Enum", '{"range":["a","b"]}')})
     assert ad.read({"2": 55, "9": "xx", "3": "b", "77": 1}) == {"va_humidity": 55, "timer": "xx", "mode": "b"}
     assert ad.read({"3": "zzz"}) == {}                      # Enum guard drops
     assert ad.unsupported == {"9": "db_v1_data"}
@@ -179,7 +172,6 @@ def test_the_later_strategies_that_can_be_written_round_trip():
         assert read(write(read(raw, ci), ci), ci) == read(raw, ci), raw
     read, write = STRATEGIES["hb_jsq_lightv1"]
     assert write(read("abc", ci), ci) == "abc"
-    from tuya2ildevice.tuya.adapter import NoWritePath
     for name in ("dj_v1_scene_alg", "hb_djv1_color", "hb_range_v1", "hb_range_v2", "ms_dp_syn_alg", "sd_clean_record",
                  "db_v1_params", "db_v1_daily", "db_v1_month", "db_v1_frozen", "db_v1_alarm"):
         with pytest.raises(NoWritePath):

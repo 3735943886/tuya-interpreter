@@ -1,6 +1,5 @@
-"""A cover's settings (`cover` block, covers.py): the device's switches, what each does, `CoverMotion` on top, and the
-host saving what is written through IL (`SaveSettings` -> `OverrideWatcher.save_settings` -> `zz_settings.json`)."""
-import json
+"""A cover's settings (`cover` block): the device's switches, what each does, motion state on top, and the Hub
+reporting what is written through IL (`SaveSettings`) for the host to keep."""
 import logging
 
 import pytest
@@ -12,7 +11,6 @@ from tuya2ildevice import (
     Connected,
     Disconnected,
     Hub,
-    IlTopics,
     Message,
     OverrideError,
     Publish,
@@ -21,13 +19,6 @@ from tuya2ildevice import (
     SettingsChanged,
     TuyaDriver,
     Value,
-)
-from tuya2ildevice.host import (
-    SETTINGS_FILE,
-    InProcessTransport,
-    OverrideWatcher,
-    Runner,
-    load_overrides,
 )
 
 PCT = {"unit": "%", "min": 0, "max": 100, "scale": 0, "step": 1}
@@ -277,88 +268,6 @@ def test_the_hub_saves_and_a_reload_shows_the_setting_at_once():
     assert not [p for p in pubs if isinstance(p, BridgeCommand)]
 
 
-# ---- the host: Runner + OverrideWatcher ------------------------------------------------------------------------------
-async def start(conv, **kw):
-    il = InProcessTransport()
-    watcher = OverrideWatcher(conv, None, interval=60)
-    loaded = await watcher.load_initial()
-    hub = Hub([curtain()], il=IlTopics("il", "tuya"), overrides=loaded.overrides, device_settings=True)
-    commands = []
-    runner = Runner(hub, il, on_bridge_command=commands.append, on_settings=watcher.save_settings, **kw)
-    watcher.runner = runner
-    await runner.start()
-    runner.on_bridge_message("cur1", Connected())
-    runner.on_bridge_message("cur1", Message("state", {"3": 30}))
-    await runner.drain()
-    return il, runner, commands
-
-
-async def test_a_switch_written_through_il_is_saved_applied_and_kept(tmp_path):
-    conv = tmp_path / "conv"
-    conv.mkdir()
-    (conv / "10_mine.json").write_text(json.dumps({"other": {"device": {"label": "x"}}}))
-    il, runner, commands = await start(conv)
-    assert il.retained["il/cur1/position"].payload == "30"
-    commands.clear()
-    await il.publish("il/cur1/cover_invert_position/set", "true", 1, False)
-    await runner.drain()
-    assert json.loads((conv / SETTINGS_FILE).read_text())["overrides"] == {"cur1": {"cover": {"invert_position": True}}}
-    assert not [c for c in commands if c.action == "set"]                     # nothing to the device
-    assert il.retained["il/cur1/position"].payload == "70"                    # at once, from the last state
-    assert il.retained["il/cur1/cover_invert_position"].payload == "true"
-    runner.on_bridge_message("cur1", Message("state", {"3": 20}))
-    await runner.drain()
-    assert il.retained["il/cur1/position"].payload == "80"
-    await runner.stop()
-
-    il, runner, _ = await start(conv)                                          # a restart: still inverted
-    assert il.retained["il/cur1/position"].payload == "70" and il.retained["il/cur1/cover_invert_position"].payload == "true"
-    await il.publish("il/cur1/cover_invert_position/set", "false", 1, False)
-    await runner.drain()
-    assert json.loads((conv / SETTINGS_FILE).read_text())["overrides"] == {"cur1": {"cover": {"invert_position": False}}}
-    assert il.retained["il/cur1/position"].payload == "30"
-    await runner.stop()
-
-
-async def test_a_sync_callback_and_a_failing_one(tmp_path, caplog):
-    saved = []
-    il = InProcessTransport()
-    runner = Runner(Hub([curtain()], device_settings=True), il, on_settings=lambda i, b: saved.append((i, b)))
-    await runner.start()
-    await il.publish("il/cur1/cover_state_source/set", "none", 1, False)
-    await runner.drain()
-    assert saved == [("cur1", {"cover": {"state_source": "none"}})]
-    await runner.stop()
-
-    async def broken(i, b):
-        raise OSError("disk full")
-    runner = Runner(Hub([curtain()], device_settings=True), il, on_settings=broken)
-    await runner.start()
-    await il.publish("il/cur1/cover_state_source/set", "none", 1, False)
-    await runner.drain()
-    assert "could not save the settings of cur1" in caplog.text
-    await runner.stop()
-
-
-async def test_save_settings_removes_an_empty_block_and_leaves_a_single_file_alone(tmp_path, caplog):
-    watcher = OverrideWatcher(tmp_path, None)
-    await watcher.save_settings("a", {"cover": {"invert_control": True}})
-    await watcher.save_settings("b", {"cover": {"settle": 2}})
-    await watcher.save_settings("a", {})
-    assert json.loads((tmp_path / SETTINGS_FILE).read_text())["overrides"] == {"b": {"cover": {"settle": 2}}}
-    assert load_overrides(tmp_path).overrides == {"b": {"cover": {"settle": 2}}}
-    assert [p.name for p in tmp_path.iterdir()] == [SETTINGS_FILE]            # no temporary file left
-    (tmp_path / SETTINGS_FILE).write_text("{broken")
-    await watcher.save_settings("a", {"cover": {"invert_control": True}})       # logged, the file left to its owner
-    assert (tmp_path / SETTINGS_FILE).read_text() == "{broken" and "could not save" in caplog.text
-    one = tmp_path / "one.json"
-    one.write_text("{}")
-    await OverrideWatcher(one, None).save_settings("a", {"cover": {"invert_control": True}})
-    assert one.read_text() == "{}" and not (tmp_path / "one.json" / SETTINGS_FILE).exists()
-
-
-
-
 @pytest.mark.parametrize("device, words", [
     (CONTROL_ONLY, ["open", "close", "stop"]),
     (cover(fns=[("mach_operate", "Enum", {"range": ["FZ", "ZZ", "STOP"]})]), ["FZ", "ZZ", "STOP"]),
@@ -405,40 +314,11 @@ def test_alias_then_control_inversion_then_report_inversion():
             assert motion(d.handle(3, Message("active", {"1": "pause"}))) == ["stopped"]
 
 
-async def test_source_settings_roundtrip_saved_and_restarted(tmp_path):
-    il, runner, commands = await start(tmp_path)
-    for key, value in [("invert_set_position", "true"), ("position_from_target", "true"),
-                       ("invert_position", "true"), ("state_source", "control"), ("invert_reported_motion", "true")]:
-        await il.publish(f"il/cur1/cover_{key}/set", value, 1, False)
-        await runner.drain()
-    d = runner.hub.drivers["cur1"]
-    assert "cover_position_from_target" in d.descriptor["props"]
-    assert "cover_invert_set_position" not in d.descriptor["props"]
-    assert sent(d.handle(2, Command("position", 70))) == {"2": 30}
-    assert not [c for c in commands if c.action == "set"]
-    await runner.stop()
-    il, runner, commands = await start(tmp_path)
-    assert il.retained["il/cur1/cover_position_from_target"].payload == "true"
-    assert il.retained["il/cur1/cover_state_source"].payload == "control"
-    assert il.retained["il/cur1/cover_invert_reported_motion"].payload == "true"
-    for mode in ("none", "inferred", "control"):
-        await il.publish("il/cur1/cover_state_source/set", mode, 1, False)
-        await runner.drain()
-    assert il.retained["il/cur1/cover_invert_reported_motion"].payload == "true"
-    await il.publish("il/cur1/cover_position_from_target/set", "false", 1, False)
-    await runner.drain()
-    d = runner.hub.drivers["cur1"]
-    assert d.covers[0].cur.code == "percent_state"
-    assert il.retained["il/cur1/cover_invert_set_position"].payload == "true"
-    assert il.retained["il/cur1/position"].payload == "70"
-    assert not [c for c in commands if c.action == "set"]
-    await runner.stop()
-
-
 def test_none_only_derives_rest_and_legacy_setting_maps_to_select():
     for enabled in (True, False):
         d = drive(curtain(), {"infer_motion": enabled})
-        assert d.covers[0].state_source == ("inferred" if enabled else "none")
+        settings = d.state["covers"][0]["settings"]
+        assert settings["state_source"] is None and settings["infer_motion"] is enabled
         assert "cover_infer_motion" not in d.descriptor["props"]
     d = drive(curtain(), {"state_source": "none", "infer_motion": True})
     assert motion(d.handle(1, Message("active", {"1": "open", "3": 0}))) == ["closed"]
@@ -462,9 +342,10 @@ def test_reload_cancels_inference_timer_and_clears_motion():
 
 
 def test_user_converter_owns_only_its_cover():
-    from tuya2ildevice import CoverMotion
-    d = drive(TWO, {"state_source": "control", "control_2": {"state_source": "control", "invert_reported_motion": True}},
-              converters={"c1": lambda device: CoverMotion()})
+    d = TuyaDriver(TWO, device_settings=True, overrides={"c1": {
+        "cover": {"state_source": "control", "control_2": {"state_source": "control", "invert_reported_motion": True}},
+        "converters": {"cover_motion": {}}}})
+    d.handle(0, Connected())
     assert "cover_state_source" not in d.descriptor["props"]
     assert "control_2_cover_state_source" in d.descriptor["props"]
     out = d.handle(1, Message("active", {"3": "open"}))
@@ -487,12 +368,11 @@ def test_reload_without_position_clears_retained_motion_and_hidden_setting_survi
 def test_multiple_cover_position_choices_and_saved_settings_are_independent():
     d = drive(TWO, {"invert_position": True, "control_2": {
         "position_from_target": True, "invert_position": True, "state_source": "control"}})
-    assert d.covers[0].cur.code == "percent_state"
-    assert d.covers[1].cur.code == "percent_control_2"
+    assert [c["cur"]["code"] for c in d.state["covers"]] == ["percent_state", "percent_control_2"]
     assert "cover_position_from_target" in d.descriptor["props"]
     assert "control_2_cover_position_from_target" in d.descriptor["props"]
     assert values(d.handle(1, Message("state", {"2": 20, "4": 30, "5": 40, "6": 50})))["position"] == 60
-    assert d._values["control_2_position"] == 70
+    assert d.state["values"]["control_2_position"] == 70
     outs = d.handle(2, Command("control_2_cover_invert_reported_motion", True))
     saved = next(o.block for o in outs if isinstance(o, SettingsChanged))
     assert saved["cover"]["invert_position"] is True

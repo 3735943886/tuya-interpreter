@@ -27,10 +27,11 @@ are NOT in snapshots (they live in core's test_*.py parametrized tests) -> extra
 - Run oracle scripts with the venv that has tuya-device-handlers==0.0.29 + tuya-device-sharing-sdk==0.2.15 (+ cryptography, paho-mqtt, requests).
 
 ## Phase 5 progress (now `tuya2ildevice`, formerly IL v2 in `src/rustuya_ha/tuya2ha/v2/`)
-- `tests/test_golden.py` compares `classify()` (from `tuya2ildevice.tuya.runtime`) against `golden.json`, per implemented
+- `tests/test_golden.py` compares the engine's `classify` operation (through `tests/engine.py`) against `golden.json`, per implemented
   platform. It asserts 324 fixtures are present (a vacuous-pass bug was caught this way: a broken fixture path had made
   the first run compare nothing).
 - `tests/golden/core_fixtures/` = copy of HA core `tests/components/tuya/fixtures` (Apache-2.0).
 - Golden limitation: button/binary_sensor/sensor snapshots were taken with entity_registry_enabled_by_default, so
   enabled_default is not golden-checked for them (value comes straight from the generated table).
-- `scripts/gen_core_tables.py` regenerates `tuya/tables/*.json` (L1) from a core checkout.
+- `scripts/gen_core_tables.py` regenerates the L1 tables from a core checkout; `scripts/build_rules.py --tables` folds them
+  into `rules/00-default.json`.

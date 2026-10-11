@@ -1,4 +1,6 @@
-"""L3 generator: tuya-device-handlers quirk registry -> src/tuya2ildevice/tuya/quirks/quirks.json (data only).
+"""L3 generator: tuya-device-handlers quirk registry -> JSON (data only).
+
+Usage: python gen_quirks.py <out.json>; then python build_rules.py --quirks <out.json>
 
 Needs tuya-device-handlers (pinned) importable. Unknown `apply_when` callables / type-information
 classes fail LOUDLY so new handler releases cannot silently drift from the engine."""

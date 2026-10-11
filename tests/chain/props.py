@@ -3,13 +3,16 @@
 import collections
 import json
 import pathlib
+import sys
 
 import fixtures
 from ildevice.core.descriptor import parse_descriptor
 from ildevice.core.plan import plan_entities
 
 from tuya2ildevice import descriptor_of
-from tuya2ildevice.tuya import standard
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
+import standard
 
 GOLDEN = pathlib.Path(__file__).resolve().parents[1] / "golden"
 

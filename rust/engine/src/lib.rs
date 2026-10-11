@@ -1,9 +1,12 @@
 mod adapter;
 mod api;
 mod assembly;
-mod classify;
 mod data;
 mod driver;
+mod entity;
+mod expr;
+mod hub;
+mod il;
 mod machine;
 mod plan;
 mod rules;
@@ -137,5 +140,25 @@ pub unsafe extern "C" fn tuya_engine_eval(input: *const c_char) -> *mut c_char {
 pub unsafe extern "C" fn tuya_engine_free(output: *mut c_char) {
     if !output.is_null() {
         drop(unsafe { CString::from_raw(output) });
+    }
+}
+
+/// A zeroed buffer of `len` bytes in this library's memory, for a host that cannot pass its own
+/// (WebAssembly): write the request and its terminating NUL there, then release it with
+/// `tuya_engine_dealloc(buffer, len)`. Returns null for `len == 0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tuya_engine_alloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(vec![0u8; len].into_boxed_slice()).cast()
+}
+
+/// # Safety
+/// `buffer` must be null or an unreleased `tuya_engine_alloc(len)` allocation of the same `len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tuya_engine_dealloc(buffer: *mut u8, len: usize) {
+    if !buffer.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(buffer, len)) });
     }
 }

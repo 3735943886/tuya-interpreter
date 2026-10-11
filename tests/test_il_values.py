@@ -78,12 +78,14 @@ def test_electricity_values_keep_their_native_units(code, prop, unit, value):
 def test_numeric_properties_declare_the_unit_of_the_published_value(code):
     rec, _ = record(code)
     driver = TuyaDriver(rec, allow_hazardous=True)
-    for prop, binding in driver.assembly.bindings.items():
-        if binding.plan.platform not in ("sensor", "number"):
+    plans = driver.state["plans"]
+    for prop, binding in driver.state["assembly"]["bindings"].items():
+        plan = plans[binding["source"]["plan"]] if "plan" in binding["source"] else {}
+        if plan.get("platform") not in ("sensor", "number"):
             continue
         spec = driver.descriptor["props"][prop]
         if spec["type"] == "number":
-            native = binding.plan.identity.get("native_unit")
+            native = plan["identity"].get("native_unit")
             assert spec.get("unit") == (native.replace("µ", "μ") if native else None)
 
 

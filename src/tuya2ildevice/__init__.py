@@ -1,17 +1,12 @@
-"""tuya2ildevice: the one place that interprets Tuya, sans-IO.
+"""tuya2ildevice: the one place that interprets Tuya, sans-IO. A thin binding of the bundled Rust engine, which is
+driven by the JSON rule pack (`rules/`).
 
-Converts a Tuya device (as rustuya / rustuya-bridge see it) to an ildevice and back:
-
-* `TuyaDriver`: descriptor, live dps packets -> values/events, ildevice commands -> dps.
-* `Hub`: the same, plus il-mqtt.md wire mapping on the IL side. It takes already-decoded bridge input
-  (`Connected`/`Disconnected`/`Message`) via `on_bridge_message` and emits abstract `BridgeCommand`s for writes/reads
-  — it has no idea rustuya-bridge's own MQTT topics exist, let alone that they're configurable. Interpreting the
-  real bridge's wire format is the host's job (a `pyrustuyabridge`-based bridge client, e.g. in rustuya-local).
-* `tuya`: the DP engine underneath (classification, value conversion, quirks).
+* `TuyaDriver`: one device: descriptor, live dps packets -> values/events, ildevice commands -> dps.
+* `Hub`: many devices behind one il-mqtt producer. Decoding the bridge's own topics, the MQTT connection, timers and
+  files are the host's (rustuya-local).
 """
 from .checks import Rejected, check_command
-from .converters import Converter, CoverMotion, Result
-from .driver import TuyaDriver, default_env, descriptor_of, schema_of
+from .driver import HostEnv, TuyaDriver, default_env, descriptor_of
 from .io import (
     Absent,
     Command,
@@ -40,16 +35,11 @@ from .overrides import OverrideError, merge_all
 
 
 def preload() -> None:
-    """Read the bundled data files that are otherwise read on first use (quirks, platform tables); importing the package
-    reads the rest. Both block: a host whose event loop must not (Home Assistant) imports and calls this in a worker
-    thread before it drives devices."""
+    """Load the engine library and the rule pack, which are otherwise loaded on first use. Both block: a host whose
+    event loop must not (Home Assistant) imports and calls this in a worker thread before it drives devices."""
     from .native import preload as native_preload
-    from .tuya.quirks import load_quirks
-    from .tuya.runtime import preload_tables
 
     native_preload()
-    load_quirks()
-    preload_tables()
 
 
 __all__ = [
@@ -57,11 +47,10 @@ __all__ = [
     "BridgeCommand",
     "Command",
     "Connected",
-    "Converter",
-    "CoverMotion",
     "Descriptor",
     "Disconnected",
     "Event",
+    "HostEnv",
     "Hub",
     "IlTopics",
     "Message",
@@ -69,7 +58,6 @@ __all__ = [
     "Publish",
     "Reject",
     "Rejected",
-    "Result",
     "SaveSettings",
     "Schedule",
     "SendMessage",
@@ -84,5 +72,4 @@ __all__ = [
     "descriptor_of",
     "merge_all",
     "preload",
-    "schema_of",
 ]

@@ -1,20 +1,68 @@
-use crate::{adapter::*, data::*, plan::Plan};
+//! ildevice properties from entity plans, laid out by each entity spec's `layout` rows.
+use crate::data::*;
+use crate::entity::{Entity, shared};
+use crate::expr::{Scope, text};
+use crate::plan::Plan;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
-use std::borrow::Cow;
+
+/// Where a property's value comes from and where its writes go.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Source {
+    /// A row of the plan's entity layout.
+    Layout { plan: usize, row: usize },
+    /// An override property bound directly to one DP.
+    Dp {
+        plan: usize,
+        role: Box<Role>,
+        trigger: bool,
+        send: V,
+    },
+    /// A declarative converter, by index.
+    Machine { index: usize },
+    /// Cover motion state, driven by the driver's motion trackers.
+    Motion,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Binding {
-    pub plan: usize,
-    pub read: String,
-    pub action: String,
-    pub arg: String,
-    pub transform: String,
+    pub source: Source,
+    pub writable: bool,
     pub total: f64,
     pub last_ts: V,
-    pub custom: Option<Role>,
-    pub send: V,
 }
+
+impl Binding {
+    pub fn new(source: Source, writable: bool) -> Self {
+        Self {
+            source,
+            writable,
+            total: 0.0,
+            last_ts: V::Null,
+        }
+    }
+
+    pub fn plan(&self) -> Option<usize> {
+        match self.source {
+            Source::Layout { plan, .. } | Source::Dp { plan, .. } => Some(plan),
+            _ => None,
+        }
+    }
+
+    /// Whether DP updates produce this property's value.
+    pub fn readable(&self, plans: &[Plan], rules: &V) -> bool {
+        match &self.source {
+            Source::Layout { plan, row } => plans
+                .get(*plan)
+                .is_some_and(|p| !layout_row(rules, p, *row)["read"].is_null()),
+            Source::Dp { trigger, .. } => !trigger,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Assembly {
     pub descriptor: V,
@@ -22,6 +70,25 @@ pub struct Assembly {
     pub unsupported: Vec<String>,
     pub covers: Vec<(usize, String, Option<String>, bool)>,
 }
+
+fn layout_row<'r>(rules: &'r V, plan: &Plan, row: usize) -> &'r V {
+    Entity::of(rules, &plan.platform)
+        .and_then(|e| items(e.field("layout")).get(row))
+        .map_or(&V::Null, |r| shared(rules, r))
+}
+
+/// A layout binding's plan, row and entity.
+fn layout<'r, 'p>(
+    plans: &'p [Plan],
+    plan: usize,
+    row: usize,
+    rules: &'r V,
+) -> Result<(&'p Plan, &'r V, Entity<'r>), String> {
+    let p = plans.get(plan).ok_or("binding refers to a missing plan")?;
+    let entity = Entity::of(rules, &p.platform).ok_or("binding refers to an unknown entity")?;
+    Ok((p, layout_row(rules, p, row), entity))
+}
+
 fn name(base: &str, props: &V) -> String {
     let base: String = base
         .to_lowercase()
@@ -47,65 +114,26 @@ fn name(base: &str, props: &V) -> String {
     }
     out
 }
-fn substitute(v: &V, p: &Plan) -> V {
-    if let Some(text) = v.as_str() {
-        if let Some(k) = text.strip_prefix("$identity.") {
-            return p.identity[k].clone();
-        }
-        if let Some(k) = text.strip_prefix("$config.") {
-            return p.config[k].clone();
-        }
-        if let Some(k) = text
-            .strip_prefix("$roles.")
-            .and_then(|t| t.strip_suffix(".range"))
-        {
-            return json!(p.role(k).map(Role::range).unwrap_or_default());
+
+/// Evaluate a definition template; members that evaluate to null are left out.
+fn definition(template: &V, rules: &V, scope: &mut Scope) -> Result<V, String> {
+    let mut def = json!({});
+    for (k, v) in fields(shared(rules, template)) {
+        let value = scope.eval(v)?;
+        if !value.is_null() {
+            def[k] = value;
         }
     }
-    v.clone()
+    Ok(def)
 }
-fn when(w: &str, p: &Plan, hazard: bool, allow: bool, rules: &V) -> bool {
-    if let Some(k) = w.strip_prefix("role:") {
-        return p.role(k).is_some();
-    }
-    if let Some(ks) = w.strip_prefix("any:") {
-        return ks.split(',').any(|k| p.role(k).is_some());
-    }
-    if let Some(k) = w.strip_prefix("nonempty:") {
-        return truth(&p.identity[k]);
-    }
-    if let Some(a) = w.strip_prefix("cover:") {
-        let bit = match a {
-            "open" => "OPEN",
-            "close" => "CLOSE",
-            _ => "STOP",
-        };
-        return !hazard
-            && (n(&p.identity["supported_features"]) as i64
-                & n(&rules["features"]["cover"][bit]) as i64
-                != 0);
-    }
-    if let Some(raw) = w.strip_prefix("alarm:") {
-        return (raw != "disarmed" || allow)
-            && p.role("master_mode")
-                .is_some_and(|r| r.range().contains(&json!(raw)));
-    }
-    if let Some(a) = w.strip_prefix("vacuum:") {
-        return n(&p.identity["supported_features"]) as i64
-            & n(&rules["features"]["vacuum"][a]) as i64
-            != 0;
-    }
-    match w {
-        "light_modes" => {
-            p.role("color_data").is_some()
-                && (p.role("color_temp").is_some()
-                    || items(&p.identity["supported_color_modes"]).contains(&json!("white")))
-        }
-        "climate_mode" => p.role("hvac_mode").is_some() && truth(&p.config["mode_options"]),
-        _ => true,
-    }
-}
-pub fn assemble(device: &V, plans: &mut [Plan], info: &V, allow: bool, rules: &V) -> Assembly {
+
+pub fn assemble(
+    device: &V,
+    plans: &mut [Plan],
+    info: &V,
+    allow: bool,
+    rules: &V,
+) -> Result<Assembly, String> {
     let mut props = json!({});
     let mut bindings = IndexMap::new();
     let mut groups = json!({});
@@ -113,47 +141,23 @@ pub fn assemble(device: &V, plans: &mut [Plan], info: &V, allow: bool, rules: &V
     let mut klass = V::Null;
     let mut covers = vec![];
     let mut unsupported = vec![];
-    for (idx, p) in plans.iter_mut().enumerate() {
-        let platform = p.platform.clone();
-        if platform == "camera" {
-            unsupported.push(format!("camera:{}", p.key));
+    for (idx, p) in plans.iter().enumerate() {
+        let Some(entity) = Entity::of(rules, &p.platform) else {
+            continue;
+        };
+        if !entity.exposed() {
+            unsupported.push(format!("{}:{}", p.platform, p.key));
             continue;
         }
-        if platform == "climate" {
-            p.config["mode_options"] = json!(
-                arr(&p.identity["hvac_modes"])
-                    .into_iter()
-                    .filter(|v| *v != "off")
-                    .collect::<Vec<_>>()
-            );
-        }
-        let composite = [
-            "light",
-            "cover",
-            "fan",
-            "siren",
-            "valve",
-            "humidifier",
-            "climate",
-            "alarm_control_panel",
-            "vacuum",
-        ]
-        .contains(&platform.as_str());
-        let hazard = platform == "cover"
-            && !allow
-            && items(&rules["constants"]["hazardous_covers"]).contains(&p.identity["device_class"]);
-        let mut extra = json!({});
-        if ["config", "diagnostic"].contains(&s(&p.identity["entity_category"])) {
-            extra["category"] = p.identity["entity_category"].clone();
-        }
+        let mut scope = entity
+            .scope(p, &device["status"])
+            .with("allow_hazardous", json!(allow));
+        let hazard = truth(&scope.eval(entity.field("hazard"))?);
+        scope.push("hazard", json!(hazard));
+        let mut extra = definition(&rules["layout_common"], rules, &mut scope)?;
         let mut pre = String::new();
         let mut group = None;
-        if composite {
-            let k = if platform == "alarm_control_panel" {
-                "alarm"
-            } else {
-                &platform
-            };
+        if let Some(k) = entity.composite() {
             if kind.is_null() {
                 kind = json!(k);
                 klass = p.identity["device_class"].clone();
@@ -169,107 +173,36 @@ pub fn assemble(device: &V, plans: &mut [Plan], info: &V, allow: bool, rules: &V
                 group = Some(g);
             }
         }
-        if platform == "cover" {
+        if entity.field("cover").is_object() {
             covers.push((idx, pre.clone(), group, hazard));
         }
-        let rows = if platform == "sensor" {
-            let mut def = json!({});
-            let ty = match s(&p.identity["kind"]) {
-                "enum" => "select",
-                "text" => "text",
-                _ => "number",
-            };
-            def["type"] = json!(ty);
-            if ty == "select" {
-                def["options"] = p
-                    .identity
-                    .get("options")
-                    .cloned()
-                    .unwrap_or_else(|| json!(p.role("main").unwrap().range()));
-            }
-            if ty == "number" {
-                if let Some(u) = p.identity["native_unit"].as_str().filter(|u| !u.is_empty()) {
-                    def["unit"] = json!(u.replace('µ', "μ"));
-                }
-                match s(&p.identity["state_class"]) {
-                    "total" | "total_increasing" => def["series"] = json!("counter"),
-                    "measurement" => def["series"] = json!("gauge"),
-                    _ => {}
-                }
-            }
-            vec![json!({"name":"$key","definition":def,"read":"native_value"})]
-        } else {
-            arr(&rules["layouts"][&platform])
-        };
-        for row in rows {
-            if !when(s(&row["when"]), p, hazard, allow, rules) {
+        for (i, row) in items(entity.field("layout")).iter().enumerate() {
+            let row = shared(rules, row);
+            if let Some(when) = row.get("when")
+                && !truth(&scope.eval(when)?)
+            {
                 continue;
             }
-            let base = if row["name"] == "$key" {
-                if p.key.is_empty() {
-                    p.role("switch").map(|r| r.code.clone()).unwrap_or_default()
-                } else {
-                    p.key.clone()
-                }
+            let base = text(&scope.eval(&row["name"])?);
+            let base = if row["grouped"] == false {
+                base
             } else {
-                format!("{pre}{}", s(&row["name"]))
+                format!("{pre}{base}")
             };
             let prop = name(&base, &props);
-            let mut def = json!({});
-            for (k, v) in obj(&row["definition"]) {
-                def[&k] = substitute(&v, p);
-            }
+            let mut def = definition(&row["definition"], rules, &mut scope)?;
             merge(&mut def, &extra);
-            if !composite {
-                for (from, to) in [("label", "label"), ("device_class", "class")] {
-                    if truth(&p.identity[from]) {
-                        def[to] = p.identity[from].clone();
-                    }
-                }
-                if platform == "button"
-                    && !items(&rules["constants"]["button_classes"]).contains(&def["class"])
-                {
-                    def.as_object_mut().unwrap().remove("class");
-                }
-                if platform == "number" && truth(&p.identity["native_unit"]) {
-                    def["unit"] = json!(s(&p.identity["native_unit"]).replace('µ', "μ"));
-                }
-            }
-            if platform == "climate"
-                && p.identity["temperature_unit"] != "°C"
-                && ["on", "mode", "target_temperature", "current_temperature"]
-                    .contains(&s(&def["role"]))
-            {
-                def.as_object_mut().unwrap().remove("role");
-            }
-            let mut action = s(&row["action"]).to_string();
-            if platform == "cover" {
-                if row["name"] == "position" {
-                    if p.role("set_position").is_some() && !hazard {
-                        def["rw"] = json!(true)
-                    } else {
-                        action.clear()
-                    }
-                }
-                if row["name"] == "tilt" {
-                    def["rw"] = json!(!hazard);
-                }
-            }
             def["src"] = json!(p.depends_on.first().unwrap_or(&p.key));
+            let writable = !row["write"].is_null()
+                && row
+                    .get("writable")
+                    .map(|w| scope.eval(w).map(|v| truth(&v)))
+                    .transpose()?
+                    .unwrap_or(true);
             props[&prop] = def;
             bindings.insert(
                 prop,
-                Binding {
-                    plan: idx,
-                    read: s(&row["read"]).into(),
-                    action,
-                    arg: s(&row["arg"]).into(),
-                    transform: s(&row["transform"]).into(),
-                    total: 0.0,
-                    last_ts: V::Null,
-                    custom: None,
-                    send: V::Null,
-                },
+                Binding::new(Source::Layout { plan: idx, row: i }, writable),
             );
         }
     }
@@ -293,167 +226,104 @@ pub fn assemble(device: &V, plans: &mut [Plan], info: &V, allow: bool, rules: &V
     if truth(&groups) {
         descriptor["groups"] = groups;
     }
-    Assembly {
+    Ok(Assembly {
         descriptor,
         bindings,
         unsupported,
         covers,
+    })
+}
+
+impl Binding {
+    pub fn read(&self, plans: &[Plan], st: &V, rules: &V, definition: &V) -> Result<V, String> {
+        match &self.source {
+            Source::Dp { role, .. } => Ok(dp_read(role, st, definition)),
+            Source::Layout { plan, row } => {
+                let (p, row, entity) = layout(plans, *plan, *row, rules)?;
+                let mut status = st.clone();
+                for (role, value) in fields(&row["assume"]) {
+                    if let Some(r) = p.role(role) {
+                        status[&r.code] = value.clone();
+                    }
+                }
+                let state = p.read(&status, self.total, rules)?;
+                let v = entity
+                    .scope(p, &status)
+                    .with("state", state)
+                    .with("definition", definition)
+                    .eval(&row["read"])?;
+                Ok(il_value(v, definition))
+            }
+            _ => Ok(V::Null),
+        }
+    }
+
+    pub fn write(
+        &self,
+        plans: &[Plan],
+        value: &V,
+        st: &V,
+        rules: &V,
+        definition: &V,
+    ) -> Result<Vec<V>, String> {
+        match &self.source {
+            Source::Dp {
+                role,
+                trigger,
+                send,
+                ..
+            } => {
+                let v = if *trigger { send } else { value };
+                Ok(vec![json!({"code":role.code,"value":role.write(v)?})])
+            }
+            Source::Layout { plan, row } => {
+                let (p, row, entity) = layout(plans, *plan, *row, rules)?;
+                let state = p.read(st, self.total, rules)?;
+                let call = entity
+                    .scope(p, st)
+                    .with("state", state)
+                    .with("definition", definition)
+                    .with("value", value)
+                    .eval(&row["write"])?;
+                p.write(s(&call["action"]), &call["args"], st, rules)
+            }
+            _ => Err("unsupported: no write path".into()),
+        }
     }
 }
-impl Binding {
-    pub fn read(&self, p: &Plan, st: &V, rules: &V, definition: &V) -> V {
-        if let Some(r) = &self.custom {
-            let raw = &st[&r.code];
-            return match s(&definition["type"]) {
-                "text" => {
-                    if raw.is_null() {
-                        V::Null
-                    } else if raw.is_string() {
-                        raw.clone()
-                    } else {
-                        json!(raw.to_string())
-                    }
-                }
-                "select" => {
-                    let v = r.read(st);
-                    if items(&definition["options"]).contains(&v) {
-                        v
-                    } else {
-                        V::Null
-                    }
-                }
-                _ => r.read(st),
-            };
-        }
-        if self.read.starts_with('@') {
-            return p.get(&self.read[1..], st);
-        }
-        let mut copied = Cow::Borrowed(st);
-        if self.transform == "climate_mode"
-            && let Some(r) = p.role("switch")
-        {
-            copied.to_mut()[&r.code] = json!(true);
-        }
-        let v = p.read(&copied, self.total, rules)[&self.read].clone();
-        if v.is_null() {
-            return v;
-        }
-        let output = match self.transform.as_str() {
-            "brightness" => number((n(&v) * 100.0 / 255.0).round_ties_even().clamp(1.0, 100.0)),
-            "kelvin" => number(n(&v).clamp(
-                n(&p.identity["min_color_temp_kelvin"]),
-                n(&p.identity["max_color_temp_kelvin"]),
-            )),
-            "not" => json!(!truth(&v)),
-            "color_mode" => {
-                if v == "hs" {
-                    json!("color")
-                } else if v == "white" || v == "color_temp" {
-                    json!("white")
-                } else {
-                    V::Null
-                }
-            }
-            "color" => {
-                let rgb = hsv_rgb(
-                    n(&v[0]).rem_euclid(360.0) / 360.0,
-                    n(&v[1]).clamp(0.0, 100.0) / 100.0,
-                    1.0,
-                );
-                json!(format!(
-                    "#{:02x}{:02x}{:02x}",
-                    (rgb[0] * 255.0).round_ties_even() as i64,
-                    (rgb[1] * 255.0).round_ties_even() as i64,
-                    (rgb[2] * 255.0).round_ties_even() as i64
-                ))
-            }
-            "climate_on" => json!(v != "off"),
-            "climate_mode" => {
-                if items(&definition["options"]).contains(&v) {
-                    v
-                } else {
-                    V::Null
-                }
-            }
-            _ => {
-                if definition["type"] == "select" && !items(&definition["options"]).contains(&v) {
-                    V::Null
-                } else {
-                    v
-                }
-            }
-        };
-        if output.is_number() {
-            number(n(&output))
-        } else {
-            output
-        }
+
+/// ildevice value rules: a select value outside its options is unknown; numbers are canonical.
+fn il_value(v: V, definition: &V) -> V {
+    if definition["type"] == "select" && !v.is_null() && !items(&definition["options"]).contains(&v)
+    {
+        V::Null
+    } else if v.is_number() {
+        number(n(&v))
+    } else {
+        v
     }
-    pub fn write(&self, p: &Plan, value: &V, st: &V, rules: &V) -> Result<Vec<V>, String> {
-        if let Some(r) = &self.custom {
-            let v = if self.action == "trigger" {
-                &self.send
+}
+
+fn dp_read(r: &Role, st: &V, definition: &V) -> V {
+    let raw = &st[&r.code];
+    match s(&definition["type"]) {
+        "text" => {
+            if raw.is_null() {
+                V::Null
+            } else if raw.is_string() {
+                raw.clone()
             } else {
-                value
-            };
-            return Ok(vec![json!({"code":r.code,"value":r.write(v)?})]);
-        }
-        let mut v = value.clone();
-        if self.transform == "brightness" {
-            v = number((n(value) * 255.0 / 100.0).round_ties_even().max(1.0))
-        }
-        if self.transform == "color" {
-            let bytes = hexbytes(s(value).strip_prefix('#').ok_or("not a #rrggbb colour")?)
-                .filter(|b| b.len() == 3)
-                .ok_or("not a #rrggbb colour")?;
-            let h = rgb_hsv(
-                bytes[0] as f64 / 255.0,
-                bytes[1] as f64 / 255.0,
-                bytes[2] as f64 / 255.0,
-            );
-            v = json!([h[0] * 360.0, h[1] * 100.0]);
-        }
-        let mut action = self.action.clone();
-        let mut args = json!({});
-        if action == "@switch" || action == "@valve" {
-            action = if action == "@valve" {
-                if truth(&v) { "open" } else { "close" }
-            } else if truth(&v) {
-                "turn_on"
-            } else {
-                "turn_off"
+                json!(raw.to_string())
             }
-            .into()
-        } else if action == "@swing" {
-            let axis = self.arg.as_str();
-            let mode = if axis == "on" {
-                if truth(&v) { "on" } else { "off" }
-            } else {
-                let h = if axis == "horizontal" {
-                    truth(&v)
-                } else {
-                    truth(&p.get("swing_h", st))
-                };
-                let vv = if axis == "vertical" {
-                    truth(&v)
-                } else {
-                    truth(&p.get("swing_v", st))
-                };
-                if h && vv {
-                    "both"
-                } else if h {
-                    "horizontal"
-                } else if vv {
-                    "vertical"
-                } else {
-                    "off"
-                }
-            };
-            action = "set_swing_mode".into();
-            args["swing_mode"] = json!(mode);
-        } else if !self.arg.is_empty() {
-            args[&self.arg] = v;
         }
-        p.write(&action, &args, st, rules)
+        "select" => {
+            let v = r.read(st);
+            if items(&definition["options"]).contains(&v) {
+                v
+            } else {
+                V::Null
+            }
+        }
+        _ => r.read(st),
     }
 }

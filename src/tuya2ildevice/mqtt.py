@@ -1,39 +1,22 @@
-"""Sans-IO IL mapping for tuya2ildevice <-> il-ha.
+"""Sans-IO hub: one `TuyaDriver` per device behind one il-mqtt producer.
 
-    device input (Connected/Disconnected/Message)   -->  Hub.on_bridge_message()  -->  TuyaDriver  -->  il/<id>, ...
-    rustuya/command  <--  BridgeCommand              <--  Hub.on_il()             <--  il/<id>/<prop>/set
+    device input (Connected/Disconnected/Message)   -->  Hub.on_bridge_message()  -->  il/<id>, ...
+    bridge (set/get)  <--  BridgeCommand             <--  Hub.on_il()             <--  il/<id>/<prop>/set
 
-`Hub` owns one `TuyaDriver` per device and speaks il-mqtt.md on the IL side. On the bridge side it takes
-already-decoded input (`Connected`/`Disconnected`/`Message`, from `io.py`) instead of a raw topic/payload: it has
-no idea rustuya-bridge's topics are configurable, or what they currently are — that's the host's job (see
-`tuya2ildevice.host` and, for the real rustuya-bridge wire format, `rustuya-local`'s bridge client, which uses
-`pyrustuyabridge` to interpret the bridge's own topic/payload templates correctly). It performs no I/O: every
-method takes what was received and returns `Publish`/`BridgeCommand`/`Schedule`/`Unschedule`.
+Every decision (what a replaced device clears, when to ask the bridge for state, how values and writes are encoded)
+is the engine's `hub` and `il` operations; this class keeps the drivers and turns the engine's actions into
+`Publish`/`BridgeCommand`/`Schedule`/`Unschedule`/`SaveSettings` for the host to execute. Decoding the bridge's own
+topics is the host's job (rustuya-local).
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from .driver import TuyaDriver
-from .io import (
-    Absent,
-    CancelTimer,
-    Command,
-    Connected,
-    Descriptor,
-    Disconnected,
-    Event,
-    Message,
-    Reject,
-    SendMessage,
-    SetTimer,
-    SettingsChanged,
-    Timer,
-    Value,
-)
+from .io import Connected, Disconnected, Message, Timer, wire
+from .native import _call
 
 IL = "il"
 
@@ -70,178 +53,131 @@ class Unschedule:
 
 @dataclass(frozen=True)
 class BridgeCommand:
-    """Ask the host to tell the bridge to read or write a device. Abstract on purpose: rendering this into an
-    actual rustuya-bridge topic/payload (its command template is configurable) is the host's job, not Hub's."""
+    """Ask the host to tell the bridge to read (`get`) or write (`set`, `dps`) a device."""
     device_id: str
-    action: str                            # "get" | "set"
+    action: str
     dps: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class SaveSettings:
-    """Ask the host to keep `block` as device `device_id`'s settings (its override block in the host's settings file,
-    replacing the one there; an empty block removes it) and to reload the overrides with it. Nothing is sent to the
-    device: a setting written through IL (`Hub(device_settings=True)`) is the producer's own."""
+    """Ask the host to keep `block` as the device's settings (its override block; empty removes it) and reload."""
     device_id: str
     block: dict
 
 
-# --- il-mqtt.md side -------------------------------------------------------------------------------
 class IlTopics:
+    """The il-mqtt topic layout: a prefix and this producer's `source`."""
+
     def __init__(self, prefix: str = "il", source: str = "tuya"):
         self.prefix, self.source = prefix, source
 
+    def call(self, action: str, **fields: Any) -> Any:
+        return _call({"op": "il", "topics": vars(self), "action": action, **fields})
+
     def descriptor(self, id: str) -> str:
-        return f"{self.prefix}/{id}"
+        return self.call("topics", device=id)["descriptor"]
 
     def state(self, id: str, prop: str) -> str:
-        return f"{self.prefix}/{id}/{prop}"
+        return self.call("topics", device=id, prop=prop)["state"]
 
     def reject(self, id: str) -> str:
-        return f"{self.prefix}/{id}/reject"
+        return self.call("topics", device=id)["reject"]
 
     @property
     def presence(self) -> str:
-        return f"{self.prefix}/_producer/{self.source}"
+        return self.call("topics")["presence"]
 
     def set_subscription(self) -> str:
-        return f"{self.prefix}/+/+/set"
+        return self.call("topics")["set_subscription"]
 
     def parse_set(self, topic: str) -> tuple[str, str] | None:
-        head = self.prefix + "/"
-        if not topic.startswith(head):
-            return None
-        parts = topic[len(head):].split("/")
-        if len(parts) == 3 and parts[2] == "set" and not parts[0].startswith("_"):
-            return parts[0], parts[1]
-        return None
+        loc = self.call("parse_set", topic=topic)
+        return tuple(loc) if loc else None
 
 
 def encode_value(value: Any) -> str:
-    """il-mqtt.md section 3: no JSON quoting of strings."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
-        value = int(value)                                    # an integral value has no fraction
-    if isinstance(value, (int, float)):
-        return json.dumps(value)
-    return str(value)
+    """A state payload (il-mqtt.md section 3)."""
+    return IlTopics().call("encode", value=value)
 
 
 def decode_write(ptype: str, payload: str) -> Any:
-    """A `set` payload -> a value for `Command`. The driver's checks refuse what does not fit."""
-    if ptype == "trigger":
-        return None
-    if ptype == "number":
-        try:
-            return json.loads(payload)
-        except ValueError:
-            pass
-    return payload
+    """A `set` payload as a command value; the driver's checks refuse what does not fit."""
+    return IlTopics().call("decode", type=ptype, payload=payload)
 
 
-def _retained(topic: str, payload: str = "") -> Publish:
-    """A retained il publish; an empty payload clears the topic."""
-    return Publish(IL, topic, payload, True, 1)
+_ACTIONS = {
+    "publish": lambda i, a: Publish(IL, a["topic"], a["payload"], a["retain"], a["qos"]),
+    "schedule": lambda i, a: Schedule(i, a["name"], a["after"]),
+    "unschedule": lambda i, a: Unschedule(i, a["name"]),
+    "bridge": lambda i, a: BridgeCommand(i, a["action"], a["dps"]),
+    "save_settings": lambda i, a: SaveSettings(i, a["block"]),
+}
 
 
-# --- the hub ---------------------------------------------------------------------------------------
+def _actions(device_id: str, actions: list[dict]) -> list:
+    return [_ACTIONS[a["kind"]](device_id, a) for a in actions]
+
+
 class Hub:
     """One driver per Tuya device id. `devices`: tuyadevices.json entries. Hosts call `start()` once, then feed
-    `on_bridge_message` / `on_il` and execute the returned outputs. `now` is whatever clock the host reads."""
+    `on_bridge_message` / `on_il` / `on_timer` and execute what they return. `now` is whatever clock the host reads.
+    `driver_kwargs` go to every `TuyaDriver` (`allow_hazardous`, `expose_unused`, `use_quirks`, `overrides`,
+    `device_settings`, `rules`)."""
 
     def __init__(self, devices: list[dict], *, il: IlTopics | None = None, **driver_kwargs: Any):
-        """`driver_kwargs` go to every `TuyaDriver`: `allow_hazardous`, `expose_unused`, `use_quirks`, `overrides`,
-        `converters`, `converter_types`, and `device_settings` (offer the devices' settings as configuration switches,
-        which come back as `SaveSettings`; off by default, for a host with nowhere to keep them)."""
         self.il = il or IlTopics()
-        self._devices = {d["id"]: d for d in devices}
         self._kw = driver_kwargs
+        for d in devices:
+            self._check_id(d["id"])
+        self._devices = {d["id"]: d for d in devices}
         self.drivers = {i: TuyaDriver(d, **driver_kwargs) for i, d in self._devices.items()}
-        for i in self.drivers:
-            self._check_id(i)
 
     @property
     def records(self) -> dict[str, dict]:
-        """The device records the Hub drives now, by id (a copy of the mapping; the records are shared)."""
+        """The device records the Hub drives now, by id."""
         return dict(self._devices)
 
-    def _check_id(self, i: str) -> None:
-        if not i or i[0] == "_" or any(c in i for c in "/+#\0"):
-            raise ValueError(f"device id {i!r} is not usable as an il-mqtt topic level (M-2)")
+    def _check_id(self, device_id: str) -> None:
+        if not self.il.call("usable_id", device=device_id):
+            raise ValueError(f"device id {device_id!r} is not usable as an il-mqtt topic level (M-2)")
+
+    def _hub(self, owner: TuyaDriver, action: str, /, **fields: Any) -> dict:
+        return owner.call("hub", action=action, topics=vars(self.il), **fields)
+
+    def _adopt(self, old: TuyaDriver | None, new: TuyaDriver, **fields: Any) -> list:
+        result = self._hub(new, "adopt", old=old.state if old else None, new=new.state, **fields)
+        if not result["kept"]:
+            new.state = result["driver"]
+            self.drivers[new.state["device"]["id"]] = new
+        return _actions(new.state["device"]["id"], result["actions"])
 
     def set_device(self, device: dict, seed: Sequence[Connected | Disconnected | Message] = (), now: float = 0) -> list:
-        """Add a device, or replace the record of one that is known (a new schema, a new local key): the descriptor
-        is published (properties it no longer has are cleared first, M-11) and, if the bridge link is up with no state
-        to go on, the state is asked for (`get`). `seed`: what the host already knows of the device (its retained link
-        state, then its retained `state` snapshot), applied before anything is published, so a host that restarts
-        republishes what il consumers already have (no `available: false` in between) and asks for nothing: the
-        bridge's snapshot is its merged, current copy. Raises before changing anything if the record cannot be
-        driven."""
-        i = device["id"]
-        self._check_id(i)
+        """Add a device, or replace the record of a known one. `seed`: what the host already knows of it (link state,
+        then the bridge's `state` snapshot), applied before anything is published. Raises, changing nothing, if the
+        record cannot be driven."""
+        self._check_id(device["id"])
         new = TuyaDriver(device, **self._kw)
-        old = self.drivers.get(i)
-        if not seed and old is not None and old.linked:
-            seed = [Connected()]
-        pubs = self._replace(i, old, new, seed, now)
-        linked = any(isinstance(inp, Connected) for inp in seed)
-        if linked and not any(isinstance(inp, Message) and inp.channel == "state" for inp in seed):
-            pubs.append(BridgeCommand(i, "get"))                    # a connected link and no snapshot: ask for one
-        self._devices[i] = device
-        return pubs
-
-    def _replace(self, i: str, old: TuyaDriver | None, new: TuyaDriver, seed: Sequence = (), now: float = 0) -> list:
-        """Drive device `i` with `new` from now on: `old`'s timers are cancelled and the properties it had that `new`
-        has not are cleared (M-11), then `new` is described (with `seed`, see `TuyaDriver.describe`); the totals `old`
-        counted carry over."""
-        pubs: list = []
-        if old is not None:
-            new.carry(old)
-            pubs += [Unschedule(i, n) for n in sorted(old.timers)]
-            pubs += [_retained(self.il.state(i, prop))
-                     for prop in old.descriptor["props"].keys() - new.descriptor["props"].keys()
-                     | {p for p, definition in old.descriptor["props"].items()
-                        if definition.get("role") == "cover_state"}]
-        pubs += self._il_pubs(i, new.describe(seed, now))
-        self.drivers[i] = new
+        pubs = self._adopt(self.drivers.get(device["id"]), new, seed=[wire(i) for i in seed], now=now)
+        self._devices[device["id"]] = device
         return pubs
 
     def remove_device(self, device_id: str) -> list:
-        """M-11: clear every retained value, then the descriptor (`remove`). Unknown ids do nothing."""
+        """M-11: clear every retained value, then the descriptor. Unknown ids do nothing."""
         old = self.drivers.pop(device_id, None)
         self._devices.pop(device_id, None)
-        if old is None:
-            return []
-        pubs: list = [Unschedule(device_id, n) for n in sorted(old.timers)]
-        pubs += [_retained(self.il.state(device_id, prop)) for prop in old.descriptor["props"]]
-        pubs.append(_retained(self.il.descriptor(device_id)))
-        return pubs
+        return _actions(device_id, self._hub(old, "remove", old=old.state)["actions"]) if old else []
 
-    def reload(self, overrides: dict | None, converters: dict | None = None,
-               converter_types: dict | None = None, *, rules: dict | None = None) -> list:
-        """Apply new user overrides (see overrides.py), and with them new code converters (`converters` by product or
-        device id, `converter_types` by name; each left as it was when None). A device whose descriptor, override
-        block, code converters or settings changed gets a fresh driver: its removed properties are cleared (M-11), the
-        new descriptor is published, and its values are worked out again from the dps the old driver last had (so a
-        changed setting shows at once); a device linked with no state yet is asked for it. Raises `OverrideError`
-        (changing nothing) if the overrides are invalid."""
+    def reload(self, overrides: dict | None, *, rules: dict | None = None) -> list:
+        """Apply new overrides (and rules). A device whose driving changed gets a fresh driver, replayed from the dps
+        the old one had. Raises `OverrideError` (changing nothing) if any device refuses them."""
         kw = {**self._kw, "overrides": overrides}
-        kw.update({k: v for k, v in (("converters", converters), ("converter_types", converter_types)) if v is not None})
         if rules is not None:
             kw["rules"] = rules
         fresh = {i: TuyaDriver(d, **kw) for i, d in self._devices.items()}          # all or nothing
         pubs: list = []
         for i, new in fresh.items():
-            old = self.drivers[i]
-            if new.descriptor == old.descriptor and new.fingerprint == old.fingerprint:
-                continue
-            seed: list = [Connected()] if old.linked else []
-            if old.synced:
-                seed.append(Message("state", old.dps))
-            pubs += self._replace(i, old, new, seed)
-            if old.linked and not old.synced:
-                pubs.append(BridgeCommand(i, "get"))
+            pubs += self._adopt(self.drivers[i], new, reload=True)
         self._kw = kw
         return pubs
 
@@ -250,75 +186,48 @@ class Hub:
 
     def presence(self, online: bool) -> Publish:
         """M-12. Register `presence(False)` as the Last Will on the il connection."""
-        return _retained(self.il.presence, "online" if online else "offline")
+        (pub,) = _actions("", [self.il.call("presence", online=online)])
+        return pub
 
-    def start(self) -> list[Publish]:
-        """Presence, then every device's descriptor and `available: false` (retained), so il-ha sees them at once."""
-        pubs = [self.presence(True)]
-        for i, d in self.drivers.items():
-            pubs += self._il_pubs(i, d.describe())
+    def start(self) -> list:
+        """Presence, then every device's descriptor and `available: false` (retained)."""
+        pubs: list = [self.presence(True)]
+        for i in self.drivers:
+            pubs += self._input(i, {"type": "describe", "seed": []})
         return pubs
 
     def stop(self) -> list[Publish]:
         return [self.presence(False)]
 
-    def on_bridge_message(self, now: float, device_id: str, inp: Connected | Disconnected | Message,
-                           retained: bool = False) -> list:
-        """`inp` is already decoded (see `io.py`) — the host (not Hub) owns turning a raw bridge MQTT message into
-        one of these, since rustuya-bridge's topics/payload template are configurable and interpreting them
-        correctly needs `pyrustuyabridge`, not a hand-rolled parser. A live `Connected` is a (re)connect and asks for
-        the state (`get`); a retained one is old news and asks only when no state has arrived yet (the bridge keeps
-        no snapshot of a device nobody asked)."""
+    def _input(self, device_id: str, inp: dict, now: float = 0, **fields: Any) -> list:
         d = self.drivers.get(device_id)
         if d is None:
             return []
-        if isinstance(inp, Message) and inp.channel != "state" and retained:
-            return []                                             # a replayed delta is not a new event (M-9)
-        pubs = self._il_pubs(device_id, d.handle(now, inp))
-        if isinstance(inp, Connected) and not (retained and d.synced):
-            pubs.append(BridgeCommand(device_id, "get"))
-        return pubs
+        result = self._hub(d, "input", driver=d.state, input=inp, now=now, **fields)
+        d.state = result["driver"]
+        return _actions(device_id, result["actions"])
+
+    def on_bridge_message(self, now: float, device_id: str, inp: Connected | Disconnected | Message,
+                          retained: bool = False) -> list:
+        """`inp` is already decoded from the bridge's topics (the host's job)."""
+        return self._input(device_id, wire(inp), now, retained=retained)
 
     def on_timer(self, now: float, device_id: str, name: str) -> list:
-        d = self.drivers.get(device_id)
-        return self._il_pubs(device_id, d.handle(now, Timer(name))) if d else []
+        return self._input(device_id, wire(Timer(name)), now)
 
     def on_il(self, now: float, topic: str, payload: bytes | str, retained: bool = False) -> list:
         loc = self.il.parse_set(topic)
         if loc is None or retained:                              # M-9: never replay an old write
             return []
-        i, prop = loc
-        d = self.drivers.get(i)
+        d = self.drivers.get(loc[0])
         if d is None:
             return []
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8", "replace")
-        ptype = d.descriptor["props"].get(prop, {}).get("type")
-        return self._il_pubs(i, d.handle(now, Command(prop, decode_write(ptype, payload))))
+        result = self._hub(d, "write", driver=d.state, prop=loc[1], payload=payload, now=now)
+        d.state = result["driver"]
+        return _actions(loc[0], result["actions"])
 
-    def _il_pubs(self, id: str, outs: list) -> list:
-        return [p for o in outs if (p := self._il_pub(id, o)) is not None]
 
-    def _il_pub(self, id: str, o: Any) -> Publish | Schedule | Unschedule | BridgeCommand | SaveSettings | None:
-        match o:
-            case Descriptor(desc):
-                desc = {**desc, "source": self.il.source}            # M-12: the presence topic's `<source>`
-                return _retained(self.il.descriptor(id), json.dumps(desc, ensure_ascii=False))
-            case Value(prop, value):
-                return _retained(self.il.state(id, prop), encode_value(value))
-            case Absent(prop):
-                return _retained(self.il.state(id, prop))
-            case Event(prop, kind):
-                return Publish(IL, self.il.state(id, prop), kind, False, 1)
-            case Reject(prop, code, reason):
-                return Publish(IL, self.il.reject(id), json.dumps({"prop": prop, "code": code, "reason": reason}),
-                               False, 1)
-            case SetTimer(name, after):
-                return Schedule(id, name, after)
-            case CancelTimer(name):
-                return Unschedule(id, name)
-            case SendMessage("set", payload):
-                return BridgeCommand(id, "set", payload["dps"])
-            case SettingsChanged(block):
-                return SaveSettings(id, block)
-        return None
+__all__ = ["IL", "BridgeCommand", "Hub", "IlTopics", "Publish", "SaveSettings", "Schedule", "Subscribe",
+           "Unschedule", "decode_write", "encode_value"]

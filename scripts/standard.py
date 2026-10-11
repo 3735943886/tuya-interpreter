@@ -1,26 +1,32 @@
-"""Tuya's own category list, applied over HA core's tables.
+"""Tuya's own category list, applied over HA core's tables when the rule pack is built (build_rules.py).
 
 Core's tables are the behaviour reference, but where Tuya's standard instruction set names a category differently
-from what core assumes, the standard wins. Both inputs are data (tables/_tuya_categories.json, generated from Tuya's
-page; tables/_tuya_standard_rules.json, the decisions) -- nothing about a category is hard-coded here.
+from what core assumes, the standard wins. Both inputs are data (data/tuya_categories.json, generated from Tuya's
+page; data/tuya_standard_rules.json, the decisions) -- nothing about a category is hard-coded here.
 """
 from __future__ import annotations
 
 import functools
+import json
+import pathlib
 from typing import Any
 
-from . import load_json
+DATA = pathlib.Path(__file__).parent / "data"
+
+
+def load_json(name: str) -> Any:
+    return json.loads((DATA / name).read_text(encoding="utf-8"))
 
 
 @functools.cache
 def categories() -> dict[str, str]:
     """Category code -> the name Tuya's standard gives it (`kg` -> "Switch")."""
-    return load_json("tables", "_tuya_categories.json")["categories"]
+    return load_json("tuya_categories.json")["categories"]
 
 
 @functools.cache
 def _rules() -> dict[str, Any]:
-    return load_json("tables", "_tuya_standard_rules.json")
+    return load_json("tuya_standard_rules.json")
 
 
 def switch_device_class(category: str, core_class: str | None) -> str | None:

@@ -1,6 +1,6 @@
-//! Host-side rule loading; device evaluation remains sans-I/O.
+//! Rule-pack layering and validation over JSON the host decoded; the engine reads no files.
+use crate::data::{items, s};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 fn schema() -> Result<&'static Value, String> {
@@ -14,24 +14,38 @@ fn schema() -> Result<&'static Value, String> {
         .map_err(Clone::clone)
 }
 
+/// A member directive: `{"$delete": true}` or `{"$append": [...]}`.
+fn directive<'v>(value: &'v Value, name: &str) -> Option<&'v Value> {
+    value
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get(name))
+}
+
+/// Merge a rule layer: objects merge recursively, other values replace, `$delete` removes a member
+/// and `$append` extends an array.
 fn patch(dst: &mut Value, src: &Value) {
-    if let Some(fields) = src.as_object() {
-        if !dst.is_object() {
-            *dst = json!({});
-        }
-        let target = dst.as_object_mut().expect("initialized object");
-        for (key, value) in fields {
-            if value
-                .as_object()
-                .is_some_and(|o| o.len() == 1 && o.get("$delete") == Some(&Value::Bool(true)))
-            {
-                target.remove(key);
-            } else {
-                patch(target.entry(key.clone()).or_insert(Value::Null), value);
-            }
-        }
-    } else {
+    let Some(fields) = src.as_object() else {
         *dst = src.clone();
+        return;
+    };
+    if !dst.is_object() {
+        *dst = json!({});
+    }
+    let target = dst.as_object_mut().expect("initialized object");
+    for (key, value) in fields {
+        if directive(value, "$delete") == Some(&Value::Bool(true)) {
+            target.remove(key);
+        } else if let Some(extra) = directive(value, "$append").and_then(Value::as_array) {
+            match target.get_mut(key) {
+                Some(Value::Array(items)) => items.extend(extra.iter().cloned()),
+                _ => {
+                    target.insert(key.clone(), Value::Array(extra.clone()));
+                }
+            }
+        } else {
+            patch(target.entry(key.clone()).or_insert(Value::Null), value);
+        }
     }
 }
 
@@ -110,106 +124,59 @@ pub fn validate(value: &Value) -> Result<(), String> {
     check(value, schema, schema, "")
 }
 
-pub fn compose(base: &Value, layers: &[Value]) -> Result<Value, String> {
-    let mut result = base.clone();
-    for layer in layers {
-        if !layer.is_object() {
-            return Err("rule layer must be a JSON object".into());
+/// One rule layer: a rule object, or `{"source": name, "rules": object}` to name it in reports.
+fn layer(v: &Value, index: usize) -> (String, &Value) {
+    match (v.get("source").and_then(Value::as_str), v.get("rules")) {
+        (Some(source), Some(rules)) if v.as_object().is_some_and(|o| o.len() == 2) => {
+            (source.to_string(), rules)
         }
-        patch(&mut result, layer);
+        _ => (format!("layer {index}"), v),
     }
-    validate(&result)?;
-    Ok(result)
 }
 
-fn files(path: &Path) -> Result<Vec<PathBuf>, String> {
-    if path.is_file() {
-        return Ok(vec![path.to_owned()]);
-    }
-    let mut paths = vec![];
-    for entry in std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if entry.file_type().map_err(|e| e.to_string())?.is_file()
-            && name.ends_with(".json")
-            && !name.starts_with(['.', '_'])
-            && name != "schema.json"
-            && name != "manifest.json"
-        {
-            paths.push(entry.path());
-        }
-    }
-    Ok(paths)
-}
-
-pub fn load(input: &Value) -> Result<Value, String> {
+/// Merge `layers` in order over `base` (decoded by the host: the engine reads no files) and
+/// validate the result. With `tolerant`, a layer that would make the rules invalid is reported in
+/// `warnings` and left out. Returns `{rules, sources, warnings}`.
+pub fn compose(input: &Value) -> Result<Value, String> {
     let base = input.get("base").cloned().unwrap_or_else(|| json!({}));
     if !base.is_object() {
         return Err("rule base must be a JSON object".into());
     }
+    let tolerant = input["tolerant"] == true;
     let schema = schema()?;
-    let mut partial_schema = schema.clone();
-    partial_schema.as_object_mut().unwrap().remove("required");
+    let mut partial = schema.clone();
+    partial
+        .as_object_mut()
+        .ok_or("invalid schema")?
+        .remove("required");
     let mut result = base;
     let mut sources = vec![];
     let mut warnings = vec![];
-    let mut paths = vec![];
-    for path in input["paths"].as_array().ok_or("paths must be an array")? {
-        paths.extend(files(Path::new(
-            path.as_str().ok_or("path must be a string")?,
-        ))?);
-    }
-    // Stable byte-order sorting: equal filenames preserve the supplied location order.
-    paths.sort_by(|a, b| {
-        a.file_name()
-            .map(|n| n.as_encoded_bytes())
-            .cmp(&b.file_name().map(|n| n.as_encoded_bytes()))
-    });
-    for file in paths {
-        let loaded = (|| {
-            let mut value = read(&file)?;
-            let fields = value.as_object().ok_or("expected a JSON object")?;
-            let legacy = input["legacy_overrides"] == true
-                && fields.keys().all(|k| schema["properties"].get(k).is_none());
-            if legacy {
-                value = json!({"overrides":value});
+    for (index, raw) in items(&input["layers"]).iter().enumerate() {
+        let (source, value) = layer(raw, index);
+        let merged = (|| {
+            if !value.is_object() {
+                return Err("rule layer must be a JSON object".to_string());
             }
             let mut next = result.clone();
-            patch(&mut next, &value);
-            if input["tolerant"] == true {
-                let complete = schema["required"].as_array().is_some_and(|keys| {
-                    keys.iter()
-                        .all(|key| key.as_str().is_some_and(|key| result.get(key).is_some()))
-                });
-                check(
-                    &next,
-                    if complete { schema } else { &partial_schema },
-                    schema,
-                    "",
-                )?;
+            patch(&mut next, value);
+            if tolerant {
+                let complete = schema["required"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().all(|k| result.get(s(k)).is_some()));
+                check(&next, if complete { schema } else { &partial }, schema, "")?;
             }
-            Ok::<Value, String>(next)
+            Ok(next)
         })();
-        match loaded {
+        match merged {
             Ok(next) => {
                 result = next;
-                sources.push(file.to_string_lossy().to_string());
+                sources.push(json!(source));
             }
-            Err(error) if input["tolerant"] == true => warnings.push(format!(
-                "{}: {error}",
-                file.file_name()
-                    .unwrap_or(file.as_os_str())
-                    .to_string_lossy()
-            )),
-            Err(error) => return Err(format!("{}: {error}", file.display())),
+            Err(error) if tolerant => warnings.push(json!(format!("{source}: {error}"))),
+            Err(error) => return Err(format!("{source}: {error}")),
         }
     }
     check(&result, schema, schema, "")?;
     Ok(json!({"rules":result,"sources":sources,"warnings":warnings}))
-}
-
-fn read(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }

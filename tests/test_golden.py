@@ -1,29 +1,20 @@
-"""Compare classify() against core snapshot goldens (golden.json), per implemented platform."""
+"""Compare the engine's classification against core snapshot goldens (golden.json), per implemented platform."""
 import json
 import pathlib
 
 import fixtures
 import pytest
+import standard
+from engine import classify, env, platforms, quirk_for, table
 
-from tuya2ildevice import default_env
-from tuya2ildevice.tuya import (  # noqa: F401  (platforms registers builders)
-    platforms,
-    standard,
-)
-from tuya2ildevice.tuya.model import DeviceSchema, DpSpec
-from tuya2ildevice.tuya.runtime import BUILDERS, classify
-
-ENV = default_env()
+ENV = env()
+PLATFORMS = platforms()
 
 assert len(fixtures.all_codes()) == 324, 'fixtures missing'
 GOLD = json.loads((pathlib.Path(__file__).parent / "golden" / "golden.json").read_text())
 
-def schema_of(code):
-    d = fixtures.load(code)
-    def mk(m):
-        return {k: DpSpec(k, v["type"], v["values"], v.get("report_type")) for k, v in m.items()}
-    return DeviceSchema(d["id"], d["category"], d["product_id"], d["name"], d["product_name"], d["online"],
-                        mk(d["function"]), mk(d["status_range"]), d["status"])
+def fixture(code):
+    return fixtures.load(code)
 
 # core's button/binary_sensor/sensor snapshot tests run with entity_registry_enabled_by_default
 NO_ENABLED_GOLD = {"button", "binary_sensor", "sensor"}
@@ -44,10 +35,8 @@ STATE_OF = {"switch": _onoff, "binary_sensor": _onoff,
 def core_reverses(code, key):
     """Did core mirror this cover's position? The engine deliberately does not (platforms.cover): core reverses by its
     position wrapper (always, or unless control_back_mode is back), and a quirk's invert_int_max cancels that."""
-    from tuya2ildevice.tuya.quirks import quirk_for
-    from tuya2ildevice.tuya.runtime import load_table
     d = fixtures.load(code)
-    desc = next((x for x in load_table("cover")["COVERS"].get(d["category"], []) if x["key"] == key), {})
+    desc = next((x for x in table("cover").get(d["category"], []) if x["key"] == key), {})
     wrapper = (desc.get("position_wrapper") or "$DPCodeInvertedPercentageWrapper").lstrip("$")
     rev = d["status"].get("control_back_mode") != "back" if wrapper == "ControlBackModePercentageMappingWrapper" else True
     quirk = quirk_for(d["product_id"]) or {}
@@ -63,8 +52,7 @@ ATTRS = (("translation_key", "translation_key"), ("device_class", "device_class"
 def run(platform):
     miss, extra, attr = [], [], []
     for code in fixtures.all_codes():
-        plan = classify(schema_of(code), ENV, platforms=(platform,))
-        got = {e.key: e for e in plan.entities}
+        got = {e.key: e for e in classify(fixture(code), ENV, (platform,))}
         want = {r["key"]: r for r in GOLD.get(code, {}).get(platform, [])}
         for k in want.keys() - got.keys():
             miss.append((code, k))
@@ -95,11 +83,11 @@ def run(platform):
                 for ck, ik in (("min","native_min_value"),("max","native_max_value"),("step","native_step")):
                     if cap.get(ck) != g.get(ik):
                         attr.append((code, k, "cap."+ck, cap.get(ck), g.get(ik)))
-            st = schema_of(code)
-            rd = got[k].read(st.status) if got[k].read else None
+            st = fixture(code)
+            rd = got[k].read(st["status"]) if platform != "button" else None
             if rd is not None and platform == "sensor":
                 exp, val = w["state"], rd["native_value"]
-                if not st.online:
+                if not st["online"]:
                     val = "unavailable"
                 elif val is None:
                     val = "unknown"
@@ -118,7 +106,7 @@ def run(platform):
                 if flip and core_pos is not None and exp in ("open", "closed"):
                     exp = "closed" if 100 - core_pos == 0 else "open"   # closed is position 0, the other end now
                 val = STATE_OF[platform](rd)
-                if not st.online:
+                if not st["online"]:
                     val = "unavailable"
                 if val != exp:
                     attr.append((code, k, "state", exp, val))
@@ -130,7 +118,7 @@ def run(platform):
                     want_p = a.get(ak)
                     if flip and ak == "current_position" and want_p is not None:
                         want_p = 100 - want_p
-                    if want_p != rd[rk] and st.online:
+                    if want_p != rd[rk] and st["online"]:
                         attr.append((code, k, ak, want_p, rd[rk]))
             if platform == "humidifier":
                 a = w["attributes"] or {}
@@ -199,7 +187,7 @@ def run(platform):
             if platform == "event" and cap.get("event_types") != g.get("event_types"):
                 attr.append((code, k, "event_types", cap.get("event_types"), g.get("event_types")))
             if platform == "select":
-                rd = got[k].read(schema_of(code).status)
+                rd = got[k].read(fixture(code)["status"])
                 if cap.get("options") != rd["options"]:
                     attr.append((code, k, "cap.options", cap.get("options"), rd["options"]))
             if platform not in NO_ENABLED_GOLD and (w["disabled_by"] is not None) != (not g["entity_registry_enabled_default"]):
@@ -225,11 +213,11 @@ def run_actions():
     for c in json.loads((pathlib.Path(__file__).parent / "golden" / "actions_golden.json").read_text()):
         plat = c["entity_id"].split(".")[0]
         act = ACTION.get(c.get("service"))
-        if plat not in BUILDERS or act is None or "mock_device_code" not in c:
+        if plat not in PLATFORMS or act is None or "mock_device_code" not in c:
             continue
         code = c["mock_device_code"]
         gold = next((r for r in GOLD[code].get(plat, []) if r["entity_id"] == c["entity_id"]), None)
-        plan = next((e for e in classify(schema_of(code), ENV, platforms=(plat,)).entities if gold and e.key == gold["key"]), None)
+        plan = next((e for e in classify(fixture(code), ENV, (plat,)) if gold and e.key == gold["key"]), None)
         n += 1
         args = {ARG.get(k, k): v for k, v in (c.get("service_data") or {}).items()}
         args = {k: (v.split(".", 1)[1].lower() if isinstance(v, str) and v.startswith("$HVACMode.") else v) for k, v in args.items()}
@@ -237,8 +225,8 @@ def run_actions():
             if sk in args:
                 args[sk] = str(args[sk])
         if args.get("white") is True and plan:                # HA light service: white=True -> current brightness
-            args["white"] = plan.read(schema_of(code).status)["brightness"]
-        got = plan.write(act, args, schema_of(code).status) if plan else None
+            args["white"] = plan.read(fixture(code)["status"])["brightness"]
+        got = plan.write(act, args, fixture(code)["status"]) if plan else None
         want = c["expected_commands"]
         if plat == "cover" and plan and core_reverses(code, gold["key"]):    # the engine does not mirror (see above)
             pos = {r.code: r.spec for n, r in plan.roles.items() if n in ("set_position", "current_position")}
@@ -250,7 +238,7 @@ def run_actions():
     print(f"actions replayed {n}  mismatched {bad}")
     return bad == 0
 
-@pytest.mark.parametrize("platform", sorted(BUILDERS))
+@pytest.mark.parametrize("platform", PLATFORMS)
 def test_platform_matches_core(platform):
     assert run(platform)
 

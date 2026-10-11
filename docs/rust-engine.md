@@ -5,37 +5,109 @@ through a two-function C ABI and dispatches explicitly registered Python plugins
 There is no Python conversion fallback and no Python interpreter in the Rust library.
 The original implementation is frozen under `tests/reference/` for oracle tooling.
 
-## Rules and execution
+## The contract
 
-`rules/00-default.json` is the canonical version-1 rule pack. It contains category
-classification tables, ordered DP role candidates, schema quirks, units, mappings,
-feature bits, IL property layouts, motion defaults and setting definitions.
+1. **Device interpretation is JSON.** `rules/00-default.json` holds every piece of device and platform knowledge:
+   category tables, entity specs, DP candidates, units, maps, feature bits, layouts and quirks.
+2. **The Rust core is shared and does no I/O.** It is an interpreter plus primitives that do not depend on any
+   device: DP types (validate, scale, invert), Tuya codecs (`value_convert` strategies, electricity, HSV), the
+   expression language, the cover motion tracker, the driver state machine and the il-mqtt wire mapping. It reads no
+   files, network or clock: hosts read rule files (and fetch anything else) and pass the decoded JSON.
+3. **Bindings are thin.** A binding moves JSON across two C functions; there are no plugin callbacks. The Python
+   package is such a binding. A JavaScript or other binding needs the same two functions (or
+   the WebAssembly build, below) and no Tuya knowledge.
+4. **Spec changes are rule layers.** A new DP code for a role, a new category, a new enum word, a new role, action,
+   property or whole platform is a JSON file under `TUYA_ENGINE_RULES` (see `tests/test_specs.py`). Only a new
+   *primitive* (a codec byte layout, an expression operation) needs an engine release.
 
-A property layout declares its creation condition, descriptor fields, read
-selector, transformation and write action. `$identity.*`, `$config.*` and
-`$roles.<name>.range` resolve against the device's classified plan. `$key` selects
-the plan key; other property names receive the composite group's prefix.
+## The rule pack
 
-Rust supplies the closed operation registry: typed validation, arithmetic,
-scaling, rounding, mappings, codecs and platform algorithms. Device-specific
-knowledge belongs in the rule pack or override JSON. New rules using supported
-operations need no rebuild; new primitives require an engine change and a
-compatible rule-language version. Binary64 arithmetic follows the reference's
-numeric conversion paths; arbitrary-precision Python numbers are outside the
-JSON ABI contract.
+| Field | Content |
+| --- | --- |
+| `platforms` | per platform, in classification order: `table` (HA core's name) and `categories` (category -> descriptions), generated |
+| `entities` | per platform, the entity spec (below) |
+| `unused` | `role` and `variants` for DPs no entity claimed (`expose_unused`) |
+| `layout_common` | definition members every property gets (e.g. `category`) |
+| `identity_defaults` | identity members a description lacks |
+| `templates` | named fragments; `{"$use": name}` stands for one anywhere a spec field or statement is expected |
+| `functions` | named expressions with `params`, called with `{"op": "call", "fn": name, "args": [...]}` |
+| `quirks` | tuya-device-handlers' schema patches by product id, generated |
+| `units`, `host_units` | unit aliases and HA's allowed units, generated |
+| `maps`, `features`, `constants`, `wind`, `electricity`, `meter_alarms` | lookup data the specs and codecs use |
+| `cover_defaults`, `cover_switches`, `motion_defaults`, `motion_property` | cover settings and the motion tracker's defaults |
+| `strategies` | the codec names a device's `local_strategy` may use |
+| `overrides` | product/device fixes (README) |
 
-The native boundary uses explicit JSON driver state:
+`rules/schema.json` validates the whole pack. `scripts/build_rules.py` folds the generators' output (HA core tables,
+quirks, host units) into it, leaving the hand-authored parts as they are.
 
-```
-create(device, options, rules) -> driver
-handle(driver, input, now, rules) -> {driver, outputs, callbacks}
-```
+## Entity specs
 
-The driver holds accumulated DP values, published values, delta totals and last
-report stamps, cover motion, declarative state slots, settings and timer names.
-No sockets or clocks are read. Serialize the returned driver to continue in
-another process using the same engine and rule pack. Internal driver state is
-version-specific; it is not a durable storage format across engine upgrades.
+Classification walks `platforms` in order. For each description of the device's category, the platform's entity
+spec builds at most one *plan*: resolved roles plus `identity` (HA's entity attributes) and `config` (what reads and
+writes need).
+
+| Spec field | Meaning |
+| --- | --- |
+| `params` | the spec's own data, visible as `entity.params`; DP candidates live in `params.codes` so a rule layer can patch them |
+| `variants` | alternatives, tried in order; the first whose steps complete builds the plan |
+| `finish` | steps run after the chosen variant (a layer can `$append` roles here) |
+| `role_order` | role order in the plan (and so in `depends_on`) |
+| `update_all` | every DP update refreshes the entity, not only its own DPs |
+| `state` | `bind` (ordered named expressions) and `fields`: the entity's state for a DP status |
+| `actions` | action name -> program; `*` handles any other action |
+| `layout` | property rows (below) |
+| `composite`, `kind` | the entity is a device kind (`kind` defaults to the platform); later ones become groups |
+| `expose` | `false`: plan only, no properties, and its DPs stay unclaimed |
+| `hazard` | expression; a hazardous entity's actions are not offered |
+| `cover` | role names the cover motion tracker uses: `position` (candidates), `target`, `instruction`, `tilt`, and `words` (map names of command words) |
+
+A variant is `{"when", "steps"}` or a group `{"when", "each", "as", "variants"}` that tries its variants per item of
+`each`. Steps are statements:
+
+| Statement | Effect |
+| --- | --- |
+| `{"role": name, "codes": expr, "types": expr, "prefer": "function"\|"status_range", "required": bool}` | resolve the first candidate DP of the first accepted type, preferring one table; a missing required role fails the variant |
+| `{"require": expr}` | the variant fails unless it holds |
+| `{"set": "identity.x"\|"config.x"\|"plan.x", "value": expr}` | assign (null removes); `plan.slot_kind`, `plan.update_all`, `plan.depends_on` |
+| `{"set": path, "merge": expr}` | assign every member of an object |
+| `{"assert": expr, "error": expr}` | fail the classification with an error |
+| `{"let": name, "value": expr}`, `{"if": expr, "then": [...], "else": [...]}`, `{"$use": template}` | shared control flow |
+
+Expressions see `rules`, `entity`, `device`, `status`, `env`, `desc` (the description), `key`, and the plan so far:
+`roles` (each role's `code`, `kind`, `spec`, `report_type`, `range` and scaled `lo`, `hi`, `step`, `scale`),
+`values` (each role's current value), `identity`, `config`, `plan`.
+
+State and actions see `roles`, `values`, `status`, `identity`, `config`, `key`, `total` (a delta accumulator), and
+actions also `action`, `args` and `state`. Action programs use `{"command": {"role", "value"}}` (validated by the
+role's DP type), `{"send": {"code", "value"}}` (raw) and `{"fail": message}`.
+
+A layout row is `{"name", "grouped", "when", "definition", "read", "write", "writable", "assume"}`:
+
+- `name` is an expression; with `grouped: false` it is not prefixed with the group's name;
+- each `definition` member is an expression, and null leaves the member out;
+- `read` computes the value from `state` (and `values`, `definition`); a `select` value outside its options is
+  unknown and numbers are canonical (il-mqtt);
+- `write` computes `{action, args}` for the entity's actions from the written `value`;
+- `assume` reads with some roles' DPs set (`{"switch": true}` shows a mode while off).
+
+## Expression language
+
+Expressions are objects with an `op`; other JSON values are literals (`literal` quotes an object). Evaluation is
+pure and bounded (1,000,000 evaluations, nesting 64; programs 10,000 statements). Device specs and declarative
+converters share it.
+
+| Group | Operations |
+| --- | --- |
+| access | `get` (`path`: dotted string or array whose items may be expressions; `default` when missing), `lookup` (object key or array index, `default`), `literal` |
+| control | `if` (`condition`, `then`, `else`), `and`, `or`, `coalesce` (all short-circuit), `let` (`bind`, `in`), `call` (`fn`, `args`), `error` (`message`) |
+| compare | `eq`, `ne` (numbers and booleans compare as numbers), `same` (exact JSON equality), `lt`, `le`, `gt`, `ge` |
+| logic, types | `not`, `truthy`, `some` (the value if truthy, else null), `is_null`, `is_number`, `is_integer`, `type_of` |
+| numbers | `add`, `sub`, `mul`, `div`, `min`, `max`, `floor`, `round_half_even`, `remap` (v, from lo, from hi, to lo, to hi), `num` (coerce), `bit_test`, `flags` (`table`, `when`: OR of `features` bits), `flag` |
+| collections | `list`, `record` (`fields`), `object` (from pairs), `concat` (arrays; null skipped), `flatten`, `len`, `index_of`, `contains`, `without`, `sort`, `zip`, `range`, `keys`, `values`, `entries`, `codes` |
+| iteration | `map`, `filter`, `find`, `any`, `all`, `count` (`args: [list]`, `as`, `do`) |
+| text | `text`, `to_string`, `str_concat`, `lower`, `capitalize`, `starts_with`, `ends_with`, `trim_start`, `trim_end`, `replace`, `hex` |
+| codecs | `parse_json`, `hex_ints`, `b64_utf8`, `b64_utf16be`, `electricity_b64`, `electricity_hex`, `hs_to_rgb_hex`, `rgb_hex_to_hs` |
 
 ## JSON converters
 
@@ -52,24 +124,9 @@ A product/device override may declare `converters.declarative`:
         },
         "initial_state": {"count": 0},
         "update": [
-          {
-            "set": ["state", "count"],
-            "value": {
-              "op": "add",
-              "args": [{"op": "get", "path": ["state", "count"]}, 1]
-            }
-          },
-          {
-            "emit": "updates",
-            "value": {"op": "get", "path": ["state", "count"]}
-          },
-          {
-            "emit": "filter_low",
-            "value": {
-              "op": "lt",
-              "args": [{"op": "get", "path": ["codes", "filter_life"], "default": 100}, 10]
-            }
-          }
+          {"set": ["state", "count"], "value": {"op": "add", "args": [{"op": "get", "path": ["state", "count"]}, 1]}},
+          {"emit": "updates", "value": {"op": "get", "path": ["state", "count"]}},
+          {"emit": "filter_low", "value": {"op": "lt", "args": [{"op": "get", "path": ["codes", "filter_life"], "default": 100}, 10]}}
         ]
       }
     }
@@ -77,44 +134,30 @@ A product/device override may declare `converters.declarative`:
 }
 ```
 
-Expression objects use `op`; other JSON values are literals. `literal` explicitly
-quotes an object containing an `op` field. The expression vocabulary is:
+Programs are statement arrays: `set` (a path beginning with `state`), `emit` (a property; null clears it), `timer`
+(`after`: seconds or null), `send` (`{code, value}`), `if`/`then`/`else` and `let`. `update`, `timer` and `reset`
+programs receive their inputs; `write` maps property names to programs and receives `prop`, `value`, `codes` and
+`now`. A writable/trigger property must have a write program. Context also contains `state` and the converter's
+`config`; updates receive `codes`, `changed`, `active`, `now`; timer programs `name`, `codes`, `now`. Only state slots
+can be assigned and a failed program commits nothing. Timer names use the `c<index>:<name>` namespace. Use `reset` to
+define which state is cleared on disconnect.
 
-| Expression | Fields / behavior |
-| --- | --- |
-| `get` | `path` array, optional literal `default`; missing yields null |
-| `literal` | `value` |
-| `if` | `condition`, `then`, `else`; evaluates only the chosen branch |
-| `coalesce` | first non-null item in `args` |
-| `eq`, `ne`, `lt`, `le`, `gt`, `ge` | two `args`; ordered comparisons require numbers |
-| `not`, `and`, `or` | `args`, JSON truth semantics |
-| `contains` | array membership, object key or string substring |
-| `is_number`, `is_null` | one item in `args` |
-| `add`, `sub`, `mul`, `div`, `min`, `max` | two numeric `args`; unknown/non-finite results yield null |
-| `round_half_even` | one numeric item in `args` |
-| `lookup` | mapping and key in `args`, optional `default` |
+## Rule layers and loading
 
-Programs are statement arrays:
+Layers merge recursively: objects merge, other values replace, `{"$delete": true}` removes a member and
+`{"$append": [...]}` extends an array. `merge_rules` takes an optional `base` and ordered `layers` (each a rule object,
+or `{"source": name, "rules": object}` to name it in reports), validates the result against the bundled schema and
+returns `{rules, sources, warnings}`; with `tolerant` a layer that would make the rules invalid is reported and left
+out.
 
-| Statement | Fields |
-| --- | --- |
-| assign state | `set`: path beginning with `state`, `value`: expression |
-| publish | `emit`: property name, `value`: expression; null clears it |
-| request/cancel timer | `timer`: local name, `after`: expression; seconds or null |
-| send DP | `send`: `{code: expression, value: expression}` |
-| conditional | `if`: expression, `then` / optional `else`: statement arrays |
+The engine reads no files. The Python binding's `load_rules(paths)` reads them: the bundled directory, then `paths`;
+directories are non-recursive; files from all locations are applied in filename byte order (equal names keep the
+location order); hidden files, `_` files and `schema.json` are excluded and `zz_settings.json` follows the same
+order. `load_rules_tolerant` also reports a file that does not parse.
 
-`update`, `timer` and `reset` programs receive their corresponding inputs;
-`write` maps property names to programs and receives `prop`, `value`, `codes`
-and `now`. A writable/trigger property must have a write program. Context also
-contains `state` and the converter's `config`. Updates receive `codes`, `changed`,
-`active`, `now`; timer programs receive `name`, `codes`, `now`.
-
-Only state slots can be assigned. Programs have no code imports or I/O and a
-10,000-statement invocation limit. Timer names use the existing `c<index>:<name>`
-namespace, preserving host scheduling behavior. Keep persistent device settings
-through `SettingsChanged` and `carry` as before. Use `reset` to define which
-custom transient state is cleared on disconnect.
+`TUYA_ENGINE_RULES` supplies additional file/directory paths (OS path separator) over the bundled pack and
+`TUYA_ENGINE_LIBRARY` another library; environment-selected rules are cached until restart. Explicit
+`load_rules(paths)` returns an independent set for `TuyaDriver(..., rules=...)` and `Hub.reload(..., rules=...)`.
 
 ## C ABI
 
@@ -123,61 +166,67 @@ See `rust/engine/tuya_engine.h`:
 ```c
 char *tuya_engine_eval(const char *request_json);
 void tuya_engine_free(char *response_json);
+unsigned char *tuya_engine_alloc(size_t len);              /* for hosts that write into the library's memory */
+void tuya_engine_dealloc(unsigned char *buffer, size_t len);
 ```
 
-Input is borrowed UTF-8 with a terminating NUL, valid during the call. Output is
-owned by Rust and must be released exactly once with this library's free
-function. Null input returns an error; freeing null is allowed. Invalid pointers
-are outside the ABI contract. The Python wrapper releases output in `finally`.
+Input is borrowed UTF-8 with a terminating NUL, valid during the call. Output is owned by Rust and must be released
+exactly once with this library's free function. Null input returns an error; freeing null is allowed. No exception
+or panic crosses the ABI. Every response is `{"ok": true, "value": ...}` or `{"ok": false, "error": "..."}`; output
+`reject` codes are the stable command-rejection contract.
 
-Every response is `{ "ok": true, "value": ... }` or
-`{ "ok": false, "error": "..." }`. Errors have diagnostic text; output `Reject`
-codes are the stable command-rejection contract. No exception crosses the C ABI.
-
-For standalone hosts, supply `rules` with each request, or register an immutable
-pack once with `{op: "install_rules", rules_id: "your-content-id", rules: pack}`.
-Subsequent requests use `rules_id`. IDs cannot be reused for different contents.
-The registry caches immutable rules, not device state. Separate hosts need only
-JSON serialization and these two C functions.
-
-The primary operations are:
+Supply `rules` with each request, or register an immutable pack once with
+`{"op": "install_rules", "rules_id": "<content id>", "rules": pack}` and pass `rules_id`. IDs cannot be reused for
+different contents. The registry caches rules, never device state.
 
 | `op` | Request fields | Result |
 | --- | --- | --- |
 | `create` | `device`, `options` | `{driver, warnings}` |
-| `handle` | `driver`, `input`, `now` | `{driver, outputs, callbacks}` |
+| `handle` | `driver`, `input`, `now` | `{driver, outputs}` |
 | `carry` | `driver`, `old` | `{driver}` with compatible delta totals |
 | `settings` | `driver` | settings block |
-| `converted` | `driver`, `index`, `result` | apply external plugin values/timers |
-| `write_callback` | `driver`, `prop`, `commands` | encode external plugin commands |
-| `classify`, `read`, `write` | schema/plan inputs | low-level compatibility operations |
+| `check` | `descriptor`, `state`, `prop`, `value` | `{accept}` or `{reject, reason}` |
+| `merge` | `mappings` | merged override blocks |
+| `hub` | `action` (below), `topics` | many devices behind one producer |
+| `il` | `action`, `topics` (`prefix`, `source`) and the action's fields | the il-mqtt wire mapping (below) |
+| `install_rules`, `merge_rules` | see above | |
+| `classify`, `read`, `write`, `on_update`, `unused`, `quirk_schema`, `status_quirk`, `device_info`, `adapter_*`, `strategy_read`, `strategy_write` | plan / schema inputs | introspection for golden tests |
 
-Input/output tags use snake_case: `connected`, `disconnected`, `message`,
-`command`, `timer`; outputs include `descriptor`, `value`, `absent`, `event`,
-`send_message`, `reject`, `set_timer`, `cancel_timer`, `settings_changed`.
-`message.json` is the flat DP map with optional `t`, matching the existing API.
-`callbacks` are empty for JSON-only configurations. Python converter plugins
-require a host that implements that plugin language; they are not portable rules.
+Driver state is explicit JSON: DP values, published values, delta totals, cover motion, converter state, settings
+and timer names. No sockets or clocks are read; serialize the returned driver to continue in another process with
+the same engine and pack. Internal driver state is version-specific, not a durable storage format.
 
-`TUYA_ENGINE_RULES` and `TUYA_ENGINE_LIBRARY` select user rule paths and the library path. `TUYA_ENGINE_RULES` supplies additional file/directory paths
-(separated with the OS path separator), over the bundled `00-default.json`. Environment-selected
-rules are cached until restart. Explicit `load_rules(paths)` returns an independent set for
-`TuyaDriver(..., rules=...)`; `OverrideWatcher` reloads complete sets when files change.
+Input/output tags are snake_case: `connected`, `disconnected`, `message`, `command`, `timer`; outputs `descriptor`,
+`value`, `absent`, `event`, `send_message`, `reject`, `set_timer`, `cancel_timer`, `settings_changed`.
+`message.json` is the flat DP map with optional `t`.
 
-`load_rules` is a host-side native operation that reads files. The evaluation operations remain
-sans-I/O. Its request accepts `base` (optional decoded seed), `paths`
-(array), and returns `{rules, sources, warnings}`. `merge_rules` accepts `base` and ordered
-`layers` for hosts that supply already decoded data. Both use the same recursive merge and
-bundled schema validation. Arrays replace; `{"$delete": true}` deletes a member. User directories
-are non-recursive; files from all locations are sorted by filename; hidden files and `schema.json` are excluded and
-`zz_settings.json` follows the same filename order. Product/device fixes are under `overrides` in the same format.
-There is no remote pack sync. Default rules are included in the wheel.
+The `il` actions: `actions` (`device`, `outputs` -> host actions: `publish {topic, payload, retain, qos}`,
+`schedule`, `unschedule`, `bridge {action, dps}`, `save_settings`), `clear` (`device`, `props`, `descriptor`),
+`presence` (`online`), `topics` (`device`, `prop`), `parse_set` (`topic`), `encode` (`value`), `decode` (`type`,
+`payload`) and `usable_id` (`device`).
+
+The `hub` actions keep no state of their own; the host keeps each device's driver JSON and passes the one concerned:
+`adopt` (`old`, `new` from `create`, `seed`, `reload`: what replacing a device publishes; with `reload` an unchanged
+driver is `kept` and the old values are replayed), `remove` (`old`), `input` (`driver`, a bridge `input` or timer,
+`retained`) and `write` (`driver`, `prop`, `payload`: an il write). Each returns the updated `driver` and the host
+`actions`, including `bridge` `get` requests.
+
+## Another language
+
+A binding loads the library (or the WebAssembly module), and for each device keeps the driver JSON: `create`, then
+`{"op": "hub", "action": "adopt"}` once and `"input"` / `"write"` per message, executing the host actions they return. Device registry, timers, rule files and the MQTT connection are the host's:
+it decodes rule files and calls `merge_rules`. Built for `wasm32-unknown-unknown` the engine imports nothing; the host
+writes each request into a `tuya_engine_alloc` buffer.
+
+[`bindings/js/engine.mjs`](../bindings/js/engine.mjs) is such a binding for JavaScript (about 60 lines);
+`node bindings/js/smoke.mjs` drives a device with the bundled rule pack, and CI runs it against the WebAssembly
+build.
 
 ## Build, packaging and validation
 
 Rust 1.88+ and Cargo are needed to build from source. Installed wheels include
 the platform library and JSON pack; they need no Rust toolchain or Python
-runtime dependencies. The host extra still supplies paho-mqtt.
+runtime dependencies.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml

@@ -6,11 +6,13 @@
   "required": [
     "version",
     "platforms",
-    "layouts",
+    "entities",
+    "unused",
+    "templates",
+    "functions",
     "quirks",
     "units",
     "host_units",
-    "roles",
     "maps",
     "features",
     "constants",
@@ -25,18 +27,14 @@
       "const": 1
     },
     "platforms": {
-      "type": "array",
-      "items": {
+      "type": "object",
+      "additionalProperties": {
         "type": "object",
         "required": [
-          "platform",
           "table",
           "categories"
         ],
         "properties": {
-          "platform": {
-            "type": "string"
-          },
           "table": {
             "type": "string"
           },
@@ -47,13 +45,45 @@
         "additionalProperties": false
       }
     },
-    "layouts": {
+    "entities": {
       "type": "object",
       "additionalProperties": {
-        "type": "array",
-        "items": {
-          "$ref": "#/$defs/layout"
+        "$ref": "#/$defs/entity"
+      }
+    },
+    "unused": {
+      "type": "object",
+      "required": [
+        "role",
+        "variants"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unused"
+          }
         }
+      },
+      "additionalProperties": false
+    },
+    "layout_common": {
+      "type": "object"
+    },
+    "identity_defaults": {
+      "type": "object"
+    },
+    "templates": {
+      "type": "object"
+    },
+    "functions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/function"
       }
     },
     "quirks": {
@@ -65,24 +95,12 @@
     "host_units": {
       "type": "object"
     },
-    "roles": {
-      "type": "object"
-    },
     "rw_roles": {
       "type": "array",
       "items": {
         "type": "string"
       },
       "uniqueItems": true
-    },
-    "role_order": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      }
     },
     "maps": {
       "type": "object"
@@ -93,11 +111,23 @@
     "constants": {
       "type": "object",
       "properties": {
-        "manufacturer": {"type": "string"},
-        "vacuum_return_mode": {"type": "string", "minLength": 1},
+        "manufacturer": {
+          "type": "string"
+        },
+        "vacuum_return_mode": {
+          "type": "string",
+          "minLength": 1
+        },
         "alarm_non_triggering_messages": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "temperature_unit_dp": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -138,43 +168,112 @@
   },
   "additionalProperties": false,
   "$defs": {
-    "layout": {
+    "entity": {
       "type": "object",
-      "required": [
-        "name",
-        "definition"
-      ],
       "properties": {
-        "name": {
+        "params": {
+          "type": "object"
+        },
+        "composite": {
+          "type": "boolean"
+        },
+        "kind": {
           "type": "string",
           "minLength": 1
         },
-        "definition": {
+        "expose": {
+          "type": "boolean"
+        },
+        "update_all": {
+          "type": "boolean"
+        },
+        "hazard": {},
+        "role_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "cover": {
+          "$ref": "#/$defs/cover"
+        },
+        "variants": {},
+        "state": {},
+        "actions": {
           "type": "object"
         },
-        "read": {
+        "layout": {},
+        "finish": {}
+      },
+      "additionalProperties": false
+    },
+    "cover": {
+      "type": "object",
+      "required": [
+        "position",
+        "target",
+        "instruction",
+        "tilt",
+        "words"
+      ],
+      "properties": {
+        "position": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "target": {
           "type": "string"
         },
-        "action": {
+        "instruction": {
           "type": "string"
         },
-        "arg": {
+        "tilt": {
           "type": "string"
         },
-        "when": {
-          "type": "string"
-        },
-        "transform": {
-          "enum": [
-            "brightness",
-            "kelvin",
-            "not",
-            "color",
-            "color_mode",
-            "climate_on",
-            "climate_mode"
-          ]
+        "words": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
+      },
+      "additionalProperties": false
+    },
+    "unused": {
+      "type": "object",
+      "required": [
+        "when",
+        "platform",
+        "steps"
+      ],
+      "properties": {
+        "when": {},
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "steps": {}
+      },
+      "additionalProperties": false
+    },
+    "function": {
+      "type": "object",
+      "required": [
+        "params",
+        "body"
+      ],
+      "properties": {
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "body": {}
       },
       "additionalProperties": false
     }

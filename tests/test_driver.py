@@ -30,7 +30,7 @@ def test_light_realtime_and_commands():
     assert d.descriptor["kind"] == "light"
     assert props["switch_led"]["role"] == "on" and props["brightness"]["max"] == 100
     outs = d.handle(0, Connected())
-    assert outs[0].desc is d.descriptor
+    assert outs[0].desc == d.descriptor
     outs = d.handle(1, Message("state", {"20": True, "22": 1000, "23": 0}))
     vals = {o.prop: o.value for o in outs if isinstance(o, Value)}
     assert vals["available"] is True and vals["switch_led"] is True and vals["brightness"] == 100
@@ -226,8 +226,7 @@ def test_merge():
         {"a": {"props": {"x": {"label": "2", "class": "c"}}}}
 
 
-# --- code converters ---------------------------------------------------------------------------
-from tuya2ildevice import Converter, Result
+# --- converters ----------------------------------------------------------------------------------
 from tuya2ildevice.io import CancelTimer, SetTimer, Timer
 
 
@@ -290,26 +289,15 @@ def test_the_bridges_merged_state_copy_does_not_settle_a_move():
     assert _motion(d.handle(12, Message("state", {"1": "close", "2": 60, "3": 60}))) == ["stopped"]  # a fresh snapshot
 
 
-def test_custom_python_converter_and_registration():
-    class Counter(Converter):
-        def props(self):
-            return {"updates": {"type": "number"}}
-
-        def reset(self):
-            self.n = 0
-
-        def __init__(self, device):
-            self.n = 0
-            self.device = device
-
-        def update(self, now, codes, changed, active):
-            self.n += 1
-            return Result({"updates": self.n}, {"tick": 10})
-
-        def timer(self, now, name, codes):
-            return {"updates": 100}
-
-    d = TuyaDriver(curtain(), converters={"p": [Counter]})              # product_id of the curtain() helper
+def test_a_declarative_converter_counts_ticks_and_replaces_a_property():
+    count = {"op": "get", "path": "state.n"}
+    conv = {"props": {"updates": {"type": "number"}, "position": {"type": "number", "role": "position"}},
+            "initial_state": {"n": 0},
+            "update": [{"set": "state.n", "value": {"op": "add", "args": [count, 1]}},
+                       {"emit": "updates", "value": count}, {"timer": "tick", "after": 10}],
+            "timer": [{"emit": "updates", "value": 100}]}
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": conv}}})
+    assert d.descriptor["props"]["position"] == {"type": "number", "role": "position"}       # replaces the table's
     d.handle(0, Connected())
     outs = d.handle(1, Message("state", {"3": 10}))
     assert Value("updates", 1) in outs and SetTimer("c0:tick", 10.0) in outs
@@ -317,13 +305,11 @@ def test_custom_python_converter_and_registration():
     assert d.handle(3, Timer("c9:x")) == [] and d.handle(3, Timer("junk")) == []
     with pytest.raises(OverrideError):
         TuyaDriver(curtain(), overrides={"cur1": {"converters": {"nope": {}}}})
-    mine = TuyaDriver(curtain(), converters={"p": [type("Mine", (Converter,), {                  # replaces the table's
-        "__init__": lambda s, dev: None, "props": lambda s: {"position": {"type": "number", "role": "position"}}})]})
-    assert mine.descriptor["props"]["position"] == {"type": "number", "role": "position"}
-    with pytest.raises(OverrideError):                                  # writable needs a write()
-        TuyaDriver(curtain(), converters={"p": [type("Bad", (Converter,), {"__init__": lambda s, dev: None,
-                                                                            "props": lambda s: {"x": {"type": "number", "rw": True}}})]})
-    hidden = TuyaDriver(curtain(), converters={"p": [Counter]}, overrides={"cur1": {"props": {"updates": {"hide": True}}}})
+    with pytest.raises(OverrideError):                                  # writable needs a write program
+        TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": {
+            "props": {"x": {"type": "number", "rw": True}}}}}})
+    hidden = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": conv},
+                                                       "props": {"updates": {"hide": True}}}})
     hidden.handle(0, Connected())
     assert Value("updates", 1) not in hidden.handle(1, Message("state", {"3": 10}))
 
@@ -379,11 +365,8 @@ def test_after_preload_driving_a_device_reads_no_file(monkeypatch):
     import fixtures
 
     import tuya2ildevice
-    from tuya2ildevice.tuya import quirks, runtime
 
     records = [fixtures.load(code) for code in fixtures.all_codes()]      # the fixtures themselves are files
-    quirks.load_quirks.cache_clear()
-    runtime.load_table.cache_clear()
     tuya2ildevice.preload()
 
     def no_io(*args, **kwargs):

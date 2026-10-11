@@ -10,7 +10,6 @@ from test_driver import SCHEMA, needs_spec
 from tuya2ildevice import (
     Command,
     Connected,
-    Converter,
     Message,
     SendMessage,
     TuyaDriver,
@@ -108,7 +107,7 @@ def test_remap_errors_are_loud():
             TuyaDriver(curtain(), overrides=bad)
 
 
-# --- per-device expose_unused, named converter types ----------------------------------------------
+# --- per-device expose_unused, converters ----------------------------------------------
 def test_expose_unused_per_device():
     from test_driver import _kg
     names = set(TuyaDriver(_kg(), overrides={"prod1": {"expose_unused": True}}).descriptor["props"])
@@ -118,22 +117,13 @@ def test_expose_unused_per_device():
                                           overrides={"prod1": {"expose_unused": False}}).descriptor["props"]
 
 
-class _Doubler(Converter):
-    def __init__(self, cfg):
-        self.factor = cfg.get("factor", 2)
-
-    def props(self):
-        return {"double": {"type": "number"}}
-
-    def update(self, now, codes, changed, active):
-        return {"double": codes.get("percent_state", 0) * self.factor}
-
-
-def test_named_converter_types_from_the_host():
-    ov = {"p": {"converters": {"doubler": {"factor": 3}}}}
+def test_a_converter_is_named_by_its_block_and_configured_by_it():
     with pytest.raises(OverrideError, match="unknown converter"):
-        TuyaDriver(curtain(), overrides=ov)
-    d = TuyaDriver(curtain(), overrides=ov, converter_types={"doubler": _Doubler})
+        TuyaDriver(curtain(), overrides={"p": {"converters": {"doubler": {"factor": 3}}}})
+    double = {"props": {"double": {"type": "number"}}, "factor": 3,
+              "update": [{"emit": "double", "value": {"op": "mul", "args": [
+                  {"op": "get", "path": "codes.percent_state", "default": 0}, {"op": "get", "path": "config.factor"}]}}]}
+    d = TuyaDriver(curtain(), overrides={"p": {"converters": {"declarative": double}}})
     d.handle(0, Connected())
     assert _values(d.handle(1, Message("active", {"3": 10})))["double"] == 30
 
@@ -216,22 +206,13 @@ def test_definition_errors_are_loud():
         TuyaDriver(PRODUCTS["5rta89nj"], overrides={"5rta89nj": {"props": ro}})
 
 
-def test_a_python_converter_can_own_a_writable_property():
-    class Speed(Converter):
-        def __init__(self, config):
-            pass
-
-        def props(self):
-            return {"position": {"type": "number", "role": "position", "min": 0, "max": 10, "step": 1, "rw": True}}
-
-        def update(self, now, codes, changed, active):
-            v = codes.get("percent_control")
-            return {"position": None if v is None else v // 10}
-
-        def write(self, prop, value, codes):
-            return {"percent_control": value * 10}
-
-    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"tens": {}}}}, converter_types={"tens": Speed})
+def test_a_declarative_converter_can_own_a_writable_property():
+    tens = {"props": {"position": {"type": "number", "role": "position", "min": 0, "max": 10, "step": 1, "rw": True}},
+            "update": [{"emit": "position", "value": {"op": "floor", "args": [
+                {"op": "div", "args": [{"op": "get", "path": "codes.percent_control"}, 10]}]}}],
+            "write": {"position": [{"send": {"code": "percent_control",
+                                             "value": {"op": "mul", "args": [{"op": "get", "path": "value"}, 10]}}}]}}
+    d = TuyaDriver(curtain(), overrides={"cur1": {"converters": {"declarative": tens}}})
     assert d.descriptor["props"]["position"]["max"] == 10
     d.handle(0, Connected())
     assert _values(d.handle(1, Message("active", {"2": 40})))["position"] == 4

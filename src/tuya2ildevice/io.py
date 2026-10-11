@@ -1,7 +1,8 @@
 """Driver inputs and outputs (il.md section 8) as plain data. No behaviour, no I/O."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -102,3 +103,17 @@ class SettingsChanged:
 
 Input = Connected | Disconnected | Message | Command | Timer
 Output = Descriptor | Value | Absent | Event | SendMessage | SetTimer | CancelTimer | Reject | SettingsChanged
+
+
+def tag(cls: type) -> str:
+    """The engine's name for an input or output type (`SetTimer` -> ``set_timer``)."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
+
+
+def wire(item: Input | Output) -> dict:
+    """An input or output as the engine's JSON."""
+    return {"type": tag(type(item)), **asdict(item)}
+
+
+OUTPUTS: dict[str, type] = {tag(c): c for c in (Descriptor, Value, Absent, Event, SendMessage, SetTimer, CancelTimer,
+                                                  Reject, SettingsChanged)}

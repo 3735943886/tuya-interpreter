@@ -107,6 +107,20 @@ impl Role {
     pub fn range(&self) -> Vec<V> {
         arr(&self.spec["range"])
     }
+    /// The role as rule expressions see it, with limits already scaled.
+    pub fn view(&self) -> V {
+        json!({
+            "code": self.code,
+            "kind": self.kind,
+            "spec": self.spec,
+            "report_type": self.report_type,
+            "range": self.range(),
+            "lo": number(self.lo() / self.scale()),
+            "hi": number(self.hi() / self.scale()),
+            "step": number(n(&self.spec["step"]) / self.scale()),
+            "scale": number(self.scale()),
+        })
+    }
     pub fn read(&self, st: &V) -> V {
         let raw = &st[&self.code];
         match self.kind.as_str() {
@@ -176,32 +190,6 @@ impl Role {
             _ => Ok(v.clone()),
         }
     }
-    pub fn pct(&self, st: &V, lo: f64, hi: f64) -> V {
-        let v = self.read(st);
-        if v.is_null() {
-            V::Null
-        } else {
-            number(
-                remap(
-                    n(&v),
-                    self.lo() / self.scale(),
-                    self.hi() / self.scale(),
-                    lo,
-                    hi,
-                )
-                .round_ties_even(),
-            )
-        }
-    }
-    pub fn pct_write(&self, v: &V, lo: f64, hi: f64) -> Result<V, String> {
-        self.write(&number(remap(
-            n(v),
-            lo,
-            hi,
-            self.lo() / self.scale(),
-            self.hi() / self.scale(),
-        )))
-    }
 }
 pub fn remap(v: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
     (v - a) / (b - a) * (d - c) + c
@@ -258,16 +246,13 @@ pub fn resolve(
     }
     Ok(None)
 }
-pub fn has(d: &V, c: &str) -> bool {
-    ["function", "status_range", "status"]
-        .iter()
-        .any(|t| d[*t].get(c).is_some())
-}
-pub fn identity(d: &V) -> V {
+/// A description's public fields (`$`-prefixed ones are generator metadata) over `defaults`.
+pub fn identity(d: &V, defaults: &V) -> V {
     let mut o = obj(d);
     o.retain(|k, _| !k.starts_with('$'));
-    o.entry("entity_registry_enabled_default")
-        .or_insert(json!(true));
+    for (k, v) in fields(defaults) {
+        o.entry(k.clone()).or_insert_with(|| v.clone());
+    }
     V::Object(o)
 }
 pub fn cond(c: &V, status: &V) -> V {
@@ -335,19 +320,61 @@ pub fn patch_op(device: &mut V, dpmap: &mut V, op: &V) {
     }
 }
 
-pub fn default_device_info(device: &V, rules: &V) -> V {
-    json!({"manufacturer":rules["constants"]["manufacturer"],"model":device["product_name"],"model_id":device["product_id"]})
+/// Give a device record its DP tables, so patches can assume objects.
+pub fn ensure_tables(d: &mut V) {
+    for t in ["function", "status_range", "status"] {
+        if !d[t].is_object() {
+            d[t] = json!({});
+        }
+    }
 }
-pub fn cover_words(role: &Role, rules: &V) -> V {
+
+/// Apply a quirk's schema patches whose `when` holds; DP id definitions land in `dpmap`.
+pub fn apply_quirk(d: &mut V, dpmap: &mut V, quirk: &V) {
+    for op in items(&quirk["ops"]) {
+        if op.get("when").is_none() || truth(&cond(&op["when"], &d["status"])) {
+            patch_op(d, dpmap, op);
+        }
+    }
+}
+
+/// A quirk's initial-status mappings (`MapInitialStatus`), first matching pair per DP.
+pub fn map_initial_status(status: &mut V, quirk: &V) {
+    for op in items(&quirk["ops"])
+        .iter()
+        .filter(|op| op["op"] == "MapInitialStatus")
+    {
+        let code = s(&op["code"]);
+        if let Some(pair) = items(&op["mapping"])
+            .iter()
+            .find(|p| eq(&status[code], &p[0]))
+        {
+            status[code] = pair[1].clone();
+        }
+    }
+}
+
+/// Vendor and model: the quirk's metadata when it names a manufacturer, else the record's.
+pub fn device_info(device: &V, quirk: &V, rules: &V) -> V {
+    let meta = &quirk["meta"];
+    if truth(&meta["manufacturer"]) {
+        json!({"manufacturer":meta["manufacturer"],"model":meta["model"],"model_id":meta["model_id"]})
+    } else {
+        json!({"manufacturer":rules["constants"]["manufacturer"],"model":device["product_name"],"model_id":device["product_id"]})
+    }
+}
+/// The command words a cover instruction role uses: the first named map whose open and close
+/// words it accepts, else the first map.
+pub fn cover_words(role: &Role, names: &V, rules: &V) -> V {
     if role.kind == "Boolean" {
         return json!({"open":true,"close":false,"stop":{"never":true}});
     }
     let range = role.range();
-    for name in ["_COVER_ENUM", "_COVER_ENUM_SPECIAL"] {
-        let words = &rules["maps"][name];
-        if range.contains(&words["open"]) && range.contains(&words["close"]) {
-            return words.clone();
-        }
-    }
-    rules["maps"]["_COVER_ENUM"].clone()
+    let maps = codes(names);
+    maps.iter()
+        .map(|name| &rules["maps"][name])
+        .find(|words| range.contains(&words["open"]) && range.contains(&words["close"]))
+        .or_else(|| maps.first().map(|name| &rules["maps"][name]))
+        .cloned()
+        .unwrap_or(V::Null)
 }

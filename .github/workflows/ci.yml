@@ -26,3 +26,17 @@ jobs:
       - run: pip install -e ".[test]"
       - run: pip install ruff==0.16.8 && ruff check src tests
       - run: python -m pytest -q
+
+  portable:
+    # The engine as WebAssembly, driven from JavaScript with the same rule pack.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build --locked --manifest-path rust/Cargo.toml --release --target wasm32-unknown-unknown
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node bindings/js/smoke.mjs

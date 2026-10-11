@@ -1,4 +1,4 @@
-"""Tuya's own category code list -> src/tuya2ildevice/tuya/tables/_tuya_categories.json.
+"""Tuya's own category code list -> scripts/data/tuya_categories.json (input of build_rules.py).
 
 Usage: python gen_tuya_categories.py [page.html]   (fetches the page when no file is given)
 Reads the "List of category code" table from Tuya's standard instruction set page. The JSON is generated;
@@ -13,7 +13,7 @@ import sys
 import urllib.request
 
 URL = "https://developer.tuya.com/en/docs/iot/standarddescription?id=K9i5ql6waswzq"
-OUT = pathlib.Path(__file__).parents[1] / "src/tuya2ildevice/tuya/tables/_tuya_categories.json"
+OUT = pathlib.Path(__file__).parent / "data/tuya_categories.json"
 
 
 def rows(page: str) -> dict[str, str]:

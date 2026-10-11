@@ -125,6 +125,27 @@ fn ffi_ownership_and_invalid_inputs() {
     }
 }
 
+#[test]
+fn host_allocated_requests_round_trip() {
+    use std::ffi::CStr;
+    use tuya_rule_engine::{
+        tuya_engine_alloc, tuya_engine_dealloc, tuya_engine_eval, tuya_engine_free,
+    };
+    let request = br#"{"op":"il","action":"encode","value":50.0}"#;
+    let len = request.len() + 1;
+    let buffer = tuya_engine_alloc(len);
+    assert!(tuya_engine_alloc(0).is_null());
+    unsafe {
+        std::ptr::copy_nonoverlapping(request.as_ptr(), buffer, request.len());
+        let output = tuya_engine_eval(buffer.cast());
+        let response: Value = serde_json::from_slice(CStr::from_ptr(output).to_bytes()).unwrap();
+        assert_eq!(response, json!({"ok": true, "value": "50"}));
+        tuya_engine_free(output);
+        tuya_engine_dealloc(buffer, len);
+        tuya_engine_dealloc(std::ptr::null_mut(), 0);
+    }
+}
+
 fn call(request: Value) -> Value {
     serde_json::from_str(&evaluate_json(&request.to_string())).unwrap()
 }
@@ -152,48 +173,40 @@ fn cover_features_and_device_identity_follow_rules() {
     rules["features"]["cover"]["OPEN"] = json!(1024);
     rules["features"]["cover"]["CLOSE"] = json!(2048);
     rules["constants"]["manufacturer"] = json!("Custom vendor");
-    let device = json!({"id":"test","product_name":"Model","product_id":"test",
+    rules["platforms"]["cover"]["categories"]["zz"] = json!([{"key":"control"}]);
+    let device = json!({"id":"test","category":"zz","product_name":"Model","product_id":"test",
         "function":{"control":{"type":"Boolean","values":{}}}});
-    let response = call(
-        json!({"op":"build","platform":"cover","device":device,"description":{"key":"control"},"env":{},"rules":rules}),
+    let plans =
+        call(json!({"op":"classify","device":device,"env":{},"platforms":["cover"],"rules":rules}));
+    assert_eq!(plans["ok"], true, "{plans}");
+    assert_eq!(plans["value"][0]["identity"]["supported_features"], 3072);
+    let created = call(
+        json!({"op":"create","device":device,"options":{"allow_hazardous":true},"rules":rules}),
     );
-    assert_eq!(response["ok"], true, "{response}");
-    let plan = &response["value"];
-    assert_eq!(plan["identity"]["supported_features"], 3072);
-    let assembly = call(
-        json!({"op":"assemble","device":device,"plans":[plan],"info":{},"allow_hazardous":true,"rules":rules}),
-    );
-    assert_eq!(assembly["ok"], true, "{assembly}");
-    assert!(
-        assembly["value"]["descriptor"]["props"]
-            .get("open")
-            .is_some()
-    );
-    let info = call(json!({"op":"device_info","device":device,"rules":rules}));
-    assert_eq!(info["value"]["manufacturer"], "Custom vendor");
+    assert_eq!(created["ok"], true, "{created}");
+    let descriptor = &created["value"]["driver"]["assembly"]["descriptor"];
+    assert!(descriptor["props"].get("open").is_some());
+    assert_eq!(descriptor["vendor"], "Custom vendor");
 }
 
 #[test]
-fn motion_configuration_is_shared_by_driver_and_api() {
+fn motion_configuration_comes_from_rules() {
     let mut rules: Value =
         serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
     rules["motion_defaults"]["command"] = json!("custom_command");
     rules["motion_defaults"]["settle"] = json!(4);
     rules["motion_property"]["label"] = json!("Custom motion");
-    let direct = call(json!({"op":"motion_create","config":{},"rules":rules}));
-    assert_eq!(direct["ok"], true, "{direct}");
     let created = call(
         json!({"op":"create","device":{"id":"test","product_id":"test"},
         "options":{"overrides":{"test":{"auto":false,"converters":{"cover_motion":{}}}}},"rules":rules}),
     );
     assert_eq!(created["ok"], true, "{created}");
+    let driver = &created["value"]["driver"];
+    assert_eq!(driver["motions"][0]["command"], "custom_command");
+    assert_eq!(driver["motions"][0]["settle"], 4.0);
     assert_eq!(
-        created["value"]["driver"]["motions"][0],
-        direct["value"]["motion"]
-    );
-    assert_eq!(
-        created["value"]["driver"]["assembly"]["descriptor"]["props"]["cover_state"],
-        direct["value"]["props"]["cover_state"]
+        driver["assembly"]["descriptor"]["props"]["cover_state"]["label"],
+        "Custom motion"
     );
 }
 
@@ -202,22 +215,20 @@ fn vacuum_return_mode_is_configurable() {
     let mut rules: Value =
         serde_json::from_str(include_str!("../../../rules/00-default.json")).unwrap();
     rules["constants"]["vacuum_return_mode"] = json!("custom_return");
-    let device = json!({"function":{"mode":{"type":"Enum","values":{"range":["custom_return"]}}}});
-    let built = call(
-        json!({"op":"build","platform":"vacuum","device":device,"description":{},"env":{},"rules":rules}),
+    rules["platforms"]["vacuum"]["categories"]["zz"] = json!({"key":""});
+    let device = json!({"category":"zz","function":{"mode":{"type":"Enum","values":{"range":["custom_return"]}}}});
+    let plans = call(
+        json!({"op":"classify","device":device,"env":{},"platforms":["vacuum"],"rules":rules}),
     );
-    assert_eq!(built["ok"], true, "{built}");
+    assert_eq!(plans["ok"], true, "{plans}");
+    let plan = &plans["value"][0];
     assert_eq!(
-        built["value"]["identity"]["supported_features"]
-            .as_i64()
-            .unwrap()
-            & 16,
+        plan["identity"]["supported_features"].as_i64().unwrap() & 16,
         16
     );
     let written = call(
-        json!({"op":"write","plan":built["value"],"action":"return_to_base","args":{},"status":{},"rules":rules}),
+        json!({"op":"write","plan":plan,"action":"return_to_base","args":{},"status":{},"rules":rules}),
     );
-    assert_eq!(written["ok"], true, "{written}");
     assert_eq!(
         written["value"],
         json!([{"code":"mode","value":"custom_return"}])

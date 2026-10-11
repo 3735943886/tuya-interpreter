@@ -42,21 +42,17 @@ def test_json_converter_reads_writes_and_keeps_state_across_ffi_calls():
 
 def test_rule_layout_changes_without_rebuilding_rust():
     pack = copy.deepcopy(rules())
-    pack['layouts']['switch'][0]['definition']['label'] = 'JSON configured switch'
+    pack['entities']['switch']['layout'][0]['definition']['label'] = 'JSON configured switch'
     dev = {'id': 'd', 'category': 'kg', 'function': {'switch_1': {'type': 'Boolean', 'values': {}}}}
     result = call('create', rules=pack, device=dev, options={})
     assert result['driver']['assembly']['descriptor']['props']['switch_1']['label'] == 'JSON configured switch'
 
 
-def test_native_driver_does_not_call_python_conversion_code(monkeypatch):
-    import tuya2ildevice.assemble as assembly
-    from tuya2ildevice.tuya import adapter, runtime
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError('Python conversion path called')
-    monkeypatch.setattr(runtime, 'classify', forbidden)
-    monkeypatch.setattr(assembly, 'assemble', forbidden)
-    monkeypatch.setattr(adapter.Adapter, 'read', forbidden)
+def test_the_package_has_no_python_conversion_code():
+    import importlib
+    for name in ('tuya2ildevice.tuya', 'tuya2ildevice.assemble', 'tuya2ildevice.fallback'):
+        with pytest.raises(ImportError):
+            importlib.import_module(name)
     driver = TuyaDriver(curtain())
     driver.handle(0, Connected())
     assert Value('position', 30) in driver.handle(1, Message('state', {'3': 30}))
