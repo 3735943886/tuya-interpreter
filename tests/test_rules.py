@@ -5,7 +5,7 @@ import pytest
 from rule_data import rules
 
 from tuya2ildevice import Connected, Message, TuyaDriver, Value, merge_rules
-from tuya2ildevice.native import _call, register_rules
+from tuya2ildevice.native import _call, register_rules, unregister_rules
 
 DEVICE = {'id': 'd', 'product_id': 'p', 'category': 'kg',
           'function': {'switch_1': {'type': 'Boolean', 'values': {}}}}
@@ -118,3 +118,26 @@ def test_rule_independent_operations_need_no_pack():
     assert _call({'op': 'merge', 'mappings': [{'x': 1}]}) == {'x': 1}
     driver = TuyaDriver(DEVICE, rules=rules())
     assert _call({'op': 'settings', 'driver': driver.state}) == driver.settings_block()
+
+
+def test_registered_rule_packs_can_be_explicitly_released():
+    identifier = 'explicit-lifetime-test'
+    _call({'op': 'install_rules', 'rules_id': identifier, 'rules': rules()})
+    state = _call({'op': 'create', 'rules_id': identifier, 'device': DEVICE})['driver']
+    assert unregister_rules(identifier)
+    assert not unregister_rules(identifier)
+    with pytest.raises(ValueError, match='not registered'):
+        _call({'op': 'handle', 'rules_id': identifier, 'driver': state, 'input': {'type': 'connected'}, 'now': 0})
+    _call({'op': 'install_rules', 'rules_id': identifier, 'rules': rules()})
+    assert _call({'op': 'handle', 'rules_id': identifier, 'driver': state,
+                  'input': {'type': 'connected'}, 'now': 0})['driver']['linked']
+    unregister_rules(identifier)
+
+
+@pytest.mark.parametrize('event', [{'type': 'unknown'}, {'type': 'message', 'channel': 'typo', 'json': {}}])
+def test_unknown_inputs_are_rejected_without_committing_state(event):
+    driver = TuyaDriver(DEVICE, rules=rules())
+    before = driver.state.copy()
+    with pytest.raises(ValueError, match='input'):
+        driver._run(event, 0)
+    assert driver.state == before

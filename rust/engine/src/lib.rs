@@ -1,24 +1,36 @@
+//! Sans-I/O Tuya interpretation with an in-memory Rust API and a portable JSON C ABI.
+//! Hosts supply rules, inputs and time, and execute returned effects. The core performs no I/O.
+//! Use [`RulePack`] and [`Driver`] to keep typed state in memory; [`evaluate_json`] preserves
+//! the explicit-state transport used by Python and WebAssembly.
 mod adapter;
 mod api;
 mod assembly;
 mod data;
 mod driver;
 mod entity;
+mod error;
 mod expr;
 mod machine;
 mod plan;
+mod protocol;
 mod rules;
+mod runtime;
+pub use error::EngineError;
+pub use protocol::{
+    Channel, DpKind, Input, MotionState, Output, RejectCode, SendChannel, StateSource,
+};
+pub use runtime::{Driver, DriverOptions, HostEnv, RuleComposition, RulePack, merge_rules};
 // JSON rule engine behind a C ABI. No device I/O or clock access.
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char};
 
 pub fn evaluate_json(input: &str) -> String {
     let result = serde_json::from_str::<Value>(input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| EngineError::InvalidInput(e.to_string()))
         .and_then(|request| api::request(&request));
     match result {
         Ok(value) => json!({"ok": true, "value": value}).to_string(),
-        Err(error) => json!({"ok": false, "error": error}).to_string(),
+        Err(error) => json!({"ok": false, "error": error.to_string()}).to_string(),
     }
 }
 

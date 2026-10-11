@@ -3,10 +3,13 @@
 //! A spec names its roles (DP candidates and accepted types), the variants that build a plan,
 //! the state it reads and the actions it writes. The engine contributes only the interpreter
 //! and DP-type semantics; platform knowledge lives in the rule pack.
+use crate::DpKind;
+use crate::EngineError;
 use crate::adapter::Adapter;
 use crate::data::*;
 use crate::expr::{Effects, Flow, Restore, Scope, execute, target, text};
 use crate::plan::Plan;
+use crate::protocol::SlotKind;
 use serde_json::{Value as V, json};
 
 /// `{"$use": name}` stands for `templates.name`; anything else is itself.
@@ -57,14 +60,21 @@ impl<'r> Entity<'r> {
     where
         'r: 'a,
     {
+        self.base_scope(plan, status)
+            .with("roles", views(&plan.roles))
+            .with("values", values(&plan.roles, status))
+    }
+
+    pub fn base_scope<'a>(&self, plan: &'a Plan, status: &'a V) -> Scope<'a>
+    where
+        'r: 'a,
+    {
         Scope::rules(self.rules)
             .with("entity", self.spec)
             .with("status", status)
             .with("key", json!(plan.key))
             .with("identity", &plan.identity)
             .with("config", &plan.config)
-            .with("roles", views(&plan.roles))
-            .with("values", values(&plan.roles, status))
     }
 }
 
@@ -91,7 +101,7 @@ struct Build<'d> {
 }
 
 impl Effects for Build<'_> {
-    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, String> {
+    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError> {
         if let Some(name) = stmt.get("role") {
             let name = s(name).to_string();
             let candidates = codes(&scope.eval(&stmt["codes"])?);
@@ -125,9 +135,9 @@ impl Effects for Build<'_> {
                 .first()
                 .is_some_and(|f| ASSIGNABLE.contains(&f.as_str()))
             {
-                return Err(format!(
-                    "a variant can assign only {ASSIGNABLE:?}, not {path:?}"
-                ));
+                return Err(
+                    format!("a variant can assign only {ASSIGNABLE:?}, not {path:?}").into(),
+                );
             }
             if let Some(merge) = stmt.get("merge") {
                 for (k, v) in obj(&scope.eval(merge)?) {
@@ -139,10 +149,10 @@ impl Effects for Build<'_> {
             }
         } else if let Some(cond) = stmt.get("assert") {
             if !truth(&scope.eval(cond)?) {
-                return Err(text(&scope.eval(&stmt["error"])?));
+                return Err(text(&scope.eval(&stmt["error"])?).into());
             }
         } else {
-            return Err(format!("unknown spec statement {stmt}"));
+            return Err(format!("unknown spec statement {stmt}").into());
         }
         Ok(Flow::Next)
     }
@@ -199,7 +209,7 @@ fn finish(
         identity: scope.take("identity"),
         roles,
         depends_on,
-        slot_kind: meta["slot_kind"].as_str().map(String::from),
+        slot_kind: meta["slot_kind"].as_str().and_then(SlotKind::parse),
         update_all: truth(&meta["update_all"])
             || entity.is_some_and(|e| truth(e.field("update_all"))),
         config: scope.take("config"),
@@ -212,7 +222,7 @@ fn attempt<'a>(
     variant: &'a V,
     scope: &mut Scope<'a>,
     device: &'a V,
-) -> Result<Option<Plan>, String> {
+) -> Result<Option<Plan>, EngineError> {
     let variant = shared(entity.rules, variant);
     if let Some(when) = variant.get("when")
         && !truth(&scope.eval(when)?)
@@ -262,7 +272,7 @@ fn attempt<'a>(
     )))
 }
 
-pub fn build(p: &str, d: &V, env: &V, desc: &V, rules: &V) -> Result<Option<Plan>, String> {
+pub fn build(p: &str, d: &V, env: &V, desc: &V, rules: &V) -> Result<Option<Plan>, EngineError> {
     let Some(entity) = Entity::of(rules, p) else {
         return Ok(None);
     };
@@ -281,7 +291,7 @@ pub fn build(p: &str, d: &V, env: &V, desc: &V, rules: &V) -> Result<Option<Plan
     Ok(None)
 }
 
-pub fn classify(d: &V, env: &V, rules: &V, only: &V) -> Result<Vec<Plan>, String> {
+pub fn classify(d: &V, env: &V, rules: &V, only: &V) -> Result<Vec<Plan>, EngineError> {
     let mut out = vec![];
     for (p, group) in fields(&rules["platforms"]) {
         if only.is_array() && !items(only).contains(&json!(p)) {
@@ -325,7 +335,7 @@ struct Commands<'p> {
 }
 
 impl Effects for Commands<'_> {
-    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, String> {
+    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError> {
         if let Some(cmd) = stmt.get("command") {
             let role = scope.eval(&cmd["role"])?;
             let value = scope.eval(&cmd["value"])?;
@@ -335,22 +345,29 @@ impl Effects for Commands<'_> {
             let value = scope.eval(&send["value"])?;
             self.out.push(json!({"code":code,"value":value}));
         } else if let Some(message) = stmt.get("fail") {
-            return Err(text(&scope.eval(message)?));
+            return Err(EngineError::InvalidValue(text(&scope.eval(message)?)));
         } else {
-            return Err(format!("unknown action statement {stmt}"));
+            return Err(format!("unknown action statement {stmt}").into());
         }
         Ok(Flow::Next)
     }
 }
 
 /// DP commands for an entity action, from the spec's `actions` (`*` handles any other action).
-pub fn act(plan: &Plan, action: &str, args: &V, status: &V, rules: &V) -> Result<Vec<V>, String> {
-    let entity = Entity::of(rules, &plan.platform).ok_or("unsupported: no write path")?;
+pub fn act(
+    plan: &Plan,
+    action: &str,
+    args: &V,
+    status: &V,
+    rules: &V,
+) -> Result<Vec<V>, EngineError> {
+    let entity = Entity::of(rules, &plan.platform)
+        .ok_or_else(|| EngineError::Unsupported("no write path".into()))?;
     let actions = entity.field("actions");
     let program = actions
         .get(action)
         .or_else(|| actions.get("*"))
-        .ok_or("unsupported: no write path")?;
+        .ok_or_else(|| EngineError::Unsupported("no write path".into()))?;
     let current = state(plan, status, 0.0, rules)?;
     let mut scope = entity
         .scope(plan, status)
@@ -363,7 +380,7 @@ pub fn act(plan: &Plan, action: &str, args: &V, status: &V, rules: &V) -> Result
 }
 
 /// Plans for DPs no entity claimed, from the rule pack's `unused` variants.
-pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<(), String> {
+pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<(), EngineError> {
     let mut consumed: Vec<_> = plans
         .iter()
         .filter(|p| Entity::of(rules, &p.platform).is_none_or(|e| e.exposed()))
@@ -401,7 +418,7 @@ pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<()
             s(&rules["unused"]["role"]).into(),
             Role {
                 code: code.clone(),
-                kind: kind.into(),
+                kind: DpKind::parse(kind).ok_or("invalid dp kind")?,
                 spec,
                 report_type: e["report_type"].clone(),
             },

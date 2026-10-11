@@ -1,22 +1,31 @@
 //! Declarative converters: state-transition programs in the shared rule language (`expr`).
 //! Programs are data: no eval, filesystem, networking, imports or clock reads.
+use crate::EngineError;
 use crate::data::*;
 use crate::expr::{Effects, Flow, Scope, execute, target};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as V, json};
+use std::sync::Arc;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Machine {
-    pub config: V,
+    pub config: Arc<V>,
     pub state: V,
 }
-#[derive(Default, Serialize)]
-struct Output {
-    values: Map<String, V>,
-    timers: Map<String, V>,
-    commands: Vec<V>,
+pub(crate) enum Method {
+    Update,
+    Timer,
+    Reset,
+    Write,
 }
-impl Effects for Output {
-    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, String> {
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct MachineEffects {
+    pub values: Map<String, V>,
+    pub timers: IndexMap<String, Option<f64>>,
+    pub commands: Vec<V>,
+}
+impl Effects for MachineEffects {
+    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError> {
         if let Some(path) = stmt.get("set") {
             let parts = target(path);
             if parts.first().is_none_or(|p| p != "state") {
@@ -30,6 +39,16 @@ impl Effects for Output {
             self.values.insert(s(prop).into(), value);
         } else if let Some(name) = stmt.get("timer") {
             let after = scope.eval(&stmt["after"])?;
+            let after = if after.is_null() {
+                None
+            } else {
+                Some(
+                    after
+                        .as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .ok_or("timer delay must be a finite nonnegative number or null")?,
+                )
+            };
             self.timers.insert(s(name).into(), after);
         } else if let Some(send) = stmt.get("send") {
             let code = scope.eval(&send["code"])?;
@@ -57,20 +76,29 @@ fn set(root: &mut V, parts: &[String], value: V) {
     *v = value;
 }
 impl Machine {
-    pub fn invoke(&mut self, method: &str, input: &V) -> Result<V, String> {
-        let program = if method == "write" {
-            &self.config["write"][s(&input["prop"])]
-        } else {
-            &self.config[method]
+    pub fn invoke(&mut self, method: Method, input: &V) -> Result<MachineEffects, EngineError> {
+        let program = match method {
+            Method::Write => &self.config["write"][s(&input["prop"])],
+            Method::Update => &self.config["update"],
+            Method::Timer => &self.config["timer"],
+            Method::Reset => &self.config["reset"],
         };
         let mut scope = Scope::new(&V::Null)
             .with_fields(input)
-            .with("config", &self.config)
+            .with("config", self.config.as_ref())
             .with("state", self.state.clone());
-        let mut result = Output::default();
+        let mut result = MachineEffects::default();
         execute(program, &mut scope, &mut result)?;
         let state = scope.take("state");
-        let result = serde_json::to_value(result).map_err(|e| e.to_string())?;
+        for (prop, value) in &mut result.values {
+            let definition = self.config["props"].get(prop).ok_or_else(|| {
+                EngineError::Evaluation(format!("converter emits undeclared property {prop}"))
+            })?;
+            *value = crate::assembly::il_value(value.take(), definition);
+            if !value.is_null() && !crate::driver::overrides::value_fits(value, definition) {
+                return Err(format!("converter value does not fit property {prop}").into());
+            }
+        }
         self.state = state;
         Ok(result)
     }
@@ -86,10 +114,11 @@ mod tests {
             config: json!({"update":[
                 {"set":["state","count"],"value":2},
                 {"emit":"count","value":{"op":"unknown"}}
-            ]}),
+            ]})
+            .into(),
             state: json!({"count":1}),
         };
-        assert!(machine.invoke("update", &json!({})).is_err());
+        assert!(machine.invoke(Method::Update, &json!({})).is_err());
         assert_eq!(machine.state, json!({"count":1}));
     }
 
@@ -97,12 +126,14 @@ mod tests {
     fn nested_programs_share_instruction_budget() {
         let statement = json!({"set":["state","count"],"value":2});
         let mut machine = Machine {
-            config: json!({"update":[{"if":true,"then":vec![statement; crate::expr::STATEMENT_LIMIT]}]}),
+            config:
+                json!({"update":[{"if":true,"then":vec![statement; crate::expr::STATEMENT_LIMIT]}]})
+                    .into(),
             state: json!({"count":1}),
         };
         assert_eq!(
-            machine.invoke("update", &json!({})).unwrap_err(),
-            "rule instruction limit exceeded"
+            machine.invoke(Method::Update, &json!({})).unwrap_err(),
+            EngineError::Evaluation("rule instruction limit exceeded".into())
         );
         assert_eq!(machine.state, json!({"count":1}));
     }

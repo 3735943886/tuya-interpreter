@@ -1,18 +1,13 @@
+use crate::protocol::SlotKind;
+use crate::runtime::fingerprint;
+use crate::{DriverOptions, EngineError, Input, RulePack};
 use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value as V, json};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-struct Pack {
-    rules: V,
-    fingerprint: String,
-}
-static PACKS: OnceLock<Mutex<HashMap<String, Arc<Pack>>>> = OnceLock::new();
-fn fingerprint(rules: &V) -> String {
-    format!("{:x}", Sha256::digest(rules.to_string().as_bytes()))
-}
+static PACKS: OnceLock<Mutex<HashMap<String, Arc<RulePack>>>> = OnceLock::new();
 fn ordered_eq(left: &V, right: &V) -> bool {
     match (left, right) {
         (V::Object(left), V::Object(right)) => {
@@ -28,8 +23,8 @@ fn ordered_eq(left: &V, right: &V) -> bool {
         _ => left == right,
     }
 }
-fn decode<T: DeserializeOwned>(input: &V, field: &str) -> Result<T, String> {
-    serde_json::from_value(input[field].clone()).map_err(|e| format!("{field}: {e}"))
+fn decode<T: DeserializeOwned>(input: &V, field: &str) -> Result<T, EngineError> {
+    T::deserialize(&input[field]).map_err(|e| EngineError::InvalidInput(format!("{field}: {e}")))
 }
 /// The request's explicit quirk, else the rule pack's quirk for the device's product.
 fn quirk<'a>(input: &'a V, device: &V, rules: &'a V) -> &'a V {
@@ -44,6 +39,7 @@ fn quirk<'a>(input: &'a V, device: &V, rules: &'a V) -> &'a V {
 enum Plain {
     MergeRules,
     InstallRules,
+    RemoveRules,
     Carry,
     Settings,
     Merge,
@@ -77,23 +73,27 @@ enum Op {
 }
 /// The rule pack a request runs with.
 enum Rules<'a> {
-    Registered(Arc<Pack>),
+    Registered(Arc<RulePack>),
     Inline { rules: &'a V, fingerprint: String },
 }
 impl<'a> Rules<'a> {
-    fn resolve(input: &'a V) -> Result<Self, String> {
+    fn resolve(input: &'a V) -> Result<Self, EngineError> {
         let rules = &input["rules"];
         if rules.is_null() {
             return registry()?
                 .get(s(&input["rules_id"]))
                 .cloned()
                 .map(Rules::Registered)
-                .ok_or_else(|| "rules are required or rules_id is not registered".into());
+                .ok_or_else(|| {
+                    EngineError::InvalidRules(
+                        "rules are required or rules_id is not registered".into(),
+                    )
+                });
         }
         if rules["version"] != 1 {
-            return Err("unsupported rule version".into());
+            return Err(EngineError::InvalidRules("unsupported rule version".into()));
         }
-        crate::rules::validate(rules)?;
+        crate::rules::validate(rules).map_err(EngineError::InvalidRules)?;
         Ok(Rules::Inline {
             rules,
             fingerprint: fingerprint(rules),
@@ -101,46 +101,52 @@ impl<'a> Rules<'a> {
     }
     fn rules(&self) -> &V {
         match self {
-            Rules::Registered(pack) => &pack.rules,
+            Rules::Registered(pack) => pack.rules(),
             Rules::Inline { rules, .. } => rules,
         }
     }
     fn fingerprint(&self) -> &str {
         match self {
-            Rules::Registered(pack) => &pack.fingerprint,
+            Rules::Registered(pack) => pack.fingerprint(),
             Rules::Inline { fingerprint, .. } => fingerprint,
         }
     }
 }
-fn registry() -> Result<MutexGuard<'static, HashMap<String, Arc<Pack>>>, String> {
+fn registry() -> Result<MutexGuard<'static, HashMap<String, Arc<RulePack>>>, EngineError> {
     PACKS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .map_err(|_| "rule registry poisoned".into())
+        .map_err(|_| EngineError::InvalidRules("rule registry poisoned".into()))
 }
-fn install(input: &V) -> Result<V, String> {
-    let rules = input["rules"].clone();
-    if rules["version"] != 1 {
-        return Err("unsupported rule version".into());
-    }
+fn install(input: &V) -> Result<V, EngineError> {
+    let rules = &input["rules"];
     let id = input["rules_id"]
         .as_str()
         .filter(|id| !id.is_empty())
-        .ok_or("rules_id must be a nonempty string")?
-        .to_string();
-    let mut packs = registry()?;
-    if let Some(old) = packs.get(&id) {
-        if !ordered_eq(&old.rules, &rules) {
-            return Err("rule id already registered with different content".into());
+        .ok_or_else(|| EngineError::InvalidInput("rules_id must be a nonempty string".into()))?;
+    if let Some(old) = registry()?.get(id).cloned() {
+        if !ordered_eq(old.rules(), rules) {
+            return Err(EngineError::InvalidRules(
+                "rule id already registered with different content".into(),
+            ));
         }
         return Ok(json!(true));
     }
-    crate::rules::validate(&rules)?;
-    let fingerprint = fingerprint(&rules);
-    packs.insert(id, Arc::new(Pack { rules, fingerprint }));
+    // Validation and hashing never hold the global registry lock.
+    let pack = Arc::new(RulePack::new(rules.clone())?);
+    let mut packs = registry()?;
+    if let Some(old) = packs.get(id) {
+        if !ordered_eq(old.rules(), pack.rules()) {
+            return Err(EngineError::InvalidRules(
+                "rule id already registered with different content".into(),
+            ));
+        }
+    } else {
+        packs.insert(id.into(), pack);
+    }
     Ok(json!(true))
 }
-pub fn request(input: &V) -> Result<V, String> {
+pub fn request(input: &V) -> Result<V, EngineError> {
     let op: Op =
         serde_json::from_value(input["op"].clone()).map_err(|_| "unknown engine operation")?;
     match op {
@@ -148,17 +154,28 @@ pub fn request(input: &V) -> Result<V, String> {
         Op::Ruled(op) => ruled(op, input, &Rules::resolve(input)?),
     }
 }
-fn plain(op: Plain, input: &V) -> Result<V, String> {
+fn plain(op: Plain, input: &V) -> Result<V, EngineError> {
     match op {
-        Plain::MergeRules => crate::rules::compose(input),
+        Plain::MergeRules => crate::rules::compose(input).map_err(EngineError::InvalidRules),
         Plain::InstallRules => install(input),
+        Plain::RemoveRules => {
+            let id = input["rules_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    EngineError::InvalidInput("rules_id must be a nonempty string".into())
+                })?;
+            Ok(json!(registry()?.remove(id).is_some()))
+        }
         Plain::Carry => {
             let mut d: Driver = decode(input, "driver")?;
+            d.validate_state()?;
             d.carry(&decode(input, "old")?);
             Ok(json!({"driver":d}))
         }
         Plain::Settings => {
             let d: Driver = decode(input, "driver")?;
+            d.validate_state()?;
             Ok(d.settings_block())
         }
         Plain::Merge => {
@@ -205,11 +222,18 @@ fn plain(op: Plain, input: &V) -> Result<V, String> {
         }
     }
 }
-fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
+fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
     let rules = pack.rules();
     match op {
         Ruled::Create => {
-            let mut d = Driver::new(&input["device"], &input["options"], rules)?;
+            let options: DriverOptions = if input["options"].is_null() {
+                DriverOptions::default()
+            } else {
+                decode(input, "options")?
+            };
+            let options = serde_json::to_value(options)
+                .map_err(|e| EngineError::InvalidInput(e.to_string()))?;
+            let mut d = Driver::new(&input["device"], &options, rules)?;
             if let Rules::Registered(_) = pack {
                 d.rules_id = s(&input["rules_id"]).into();
             }
@@ -218,14 +242,22 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
         }
         Ruled::Handle => {
             let mut d: Driver = decode(input, "driver")?;
+            d.validate_state()?;
             if d.rules_fingerprint != pack.fingerprint() {
-                return Err("driver rules do not match the supplied rule pack".into());
+                return Err(EngineError::InvalidRules(
+                    "driver rules do not match the supplied rule pack".into(),
+                ));
             }
             let now = input["now"]
                 .as_f64()
                 .filter(|v| v.is_finite())
-                .ok_or("now must be a finite number supplied by the host")?;
-            let result = d.handle(now, &input["input"], rules)?;
+                .ok_or_else(|| {
+                    EngineError::InvalidInput(
+                        "now must be a finite number supplied by the host".into(),
+                    )
+                })?;
+            let event: Input = decode(input, "input")?;
+            let result = d.handle(now, &event, rules)?;
             Ok(json!({"driver":d,"outputs":result}))
         }
         Ruled::OnUpdate => {
@@ -236,29 +268,29 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
             let mut fire = V::Null;
             if changed.is_null() {
                 write = true
-            } else if p.slot_kind.as_deref() == Some("event") {
-                if p.depends_on
-                    .first()
-                    .is_some_and(|c| codes(changed).contains(c))
-                {
-                    fire = p.read(&input["status"], 0.0, rules)?["event"].clone();
-                    write = truth(&fire);
-                }
-            } else if p.slot_kind.as_deref() == Some("delta") {
-                let code = &p.depends_on[0];
-                let ts = &input["timestamps"][code];
-                let raw = &input["status"][code];
-                if codes(changed).contains(code)
-                    && !ts.is_null()
-                    && *ts != slot["last_ts"]
-                    && !raw.is_null()
-                {
-                    slot["total"] = json!(n(&slot["total"]) + n(raw));
-                    slot["last_ts"] = ts.clone();
+            } else if p.slot_kind == Some(SlotKind::Event) {
+                if let Some(event) = p.event(&input["status"], &codes(changed), rules)? {
+                    fire = event;
                     write = true;
                 }
+            } else if p.slot_kind == Some(SlotKind::Delta) {
+                if let Some(code) = p.depends_on.first() {
+                    let mut total = n(&slot["total"]);
+                    let mut last_ts = slot["last_ts"].clone();
+                    write = crate::plan::accumulate(
+                        &mut total,
+                        &mut last_ts,
+                        &input["status"][code],
+                        &input["timestamps"][code],
+                        codes(changed).contains(code),
+                    );
+                    if write {
+                        slot["total"] = json!(total);
+                        slot["last_ts"] = last_ts;
+                    }
+                }
             } else {
-                write = p.update_all || p.depends_on.iter().any(|c| codes(changed).contains(c));
+                write = p.affected(&codes(changed));
             }
             Ok(json!({"slot":slot,"write_state":write,"fire":fire}))
         }
@@ -301,6 +333,7 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
         Ruled::Read => {
             let p: Plan = decode(input, "plan")?;
             p.read(&input["status"], n(&input["total"]), rules)
+                .map_err(EngineError::Evaluation)
         }
         Ruled::Write => {
             let p: Plan = decode(input, "plan")?;
@@ -322,6 +355,7 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, String> {
         }
         Ruled::StrategyRead => {
             strategy_read(s(&input["name"]), &input["value"], &input["config"], rules)
+                .map_err(EngineError::Evaluation)
         }
     }
 }

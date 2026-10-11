@@ -93,8 +93,10 @@ A layout row is `{"name", "grouped", "when", "definition", "read", "write", "wri
 ## Expression language
 
 Expressions are objects with an `op`; other JSON values are literals (`literal` quotes an object). Evaluation is
-pure and bounded (1,000,000 evaluations, nesting 64; programs 10,000 statements). Device specs and declarative
-converters share it.
+pure and bounded (1,000,000 evaluations, expression and program nesting 64; programs 10,000 statements). A generated
+value may contain at most 100,000 JSON nodes and 1 MiB of text, including object keys. A scope also shares cumulative
+result budgets of 1,000,000 JSON nodes and 16 MiB of text, so repeated allocations cannot bypass the per-value limits.
+These are interpreter budgets, rather than a byte-exact heap quota. Device specs and declarative converters share them.
 
 | Group | Operations |
 | --- | --- |
@@ -141,6 +143,17 @@ programs receive their inputs; `write` maps property names to programs and recei
 can be assigned and a failed program commits nothing. Timer names use the `c<index>:<name>` namespace. Use `reset` to
 define which state is cleared on disconnect.
 
+`write`, `update` and `timer` programs all return their declared value, timer and send effects. A write may update
+local state and schedule a timer without sending a DP command. Sends from one invocation are combined into one
+`send_message`; they are validated before values or timers are published. An unsupported write returns `reject`
+and rolls back its converter state. A failed update or timer leaves the whole driver unchanged. Converter values
+must fit their declared property type; select values outside the declared options become absent. Timer delays must
+be finite, nonnegative numbers, or null to cancel. Hidden or replaced properties do not receive converter values.
+`reset` programs accept state assignments and control flow only; disconnect already clears values and cancels timers.
+
+Override layers may partially refine converter properties or programs. Structural validation runs when rules are
+composed, and property ownership and required write programs are checked after the product and device blocks merge.
+
 ## Rule layers and loading
 
 Layers merge recursively: objects merge, other values replace, `{"$delete": true}` removes a member and
@@ -153,6 +166,40 @@ Neither engine nor bindings load rule files. Hosts decode and order layers, then
 `merge_rules(layers, base=pack, tolerant=False)` in Python or `op: merge_rules` through the ABI.
 Python `TuyaDriver(device, rules=pack)` requires an explicit pack.
 `TUYA_ENGINE_LIBRARY` selects the native library used by the Python binding.
+
+## Native Rust API
+
+The crate exports a typed, in-memory API independently of the C ABI:
+
+```rust
+use std::sync::Arc;
+use serde_json::json;
+use tuya_rule_engine::{Channel, Driver, DriverOptions, Input, RulePack};
+
+// The host loads and decodes both values.
+let rules = Arc::new(RulePack::new(decoded_rules)?);
+let mut driver = Driver::new(decoded_device, rules.clone(), DriverOptions::default())?;
+let descriptor_effects = driver.handle(0.0, Input::Connected)?;
+let effects = driver.handle(1.0, Input::Message {
+    channel: Channel::Active,
+    json: json!({"1": true}),
+})?;
+```
+
+`Input`, `Output`, `Channel` and `RejectCode` use the same serde tags as the JSON ABI. DP kinds, motion states and
+state-source modes are enums inside the engine. `EngineError` distinguishes invalid rules, devices, overrides and
+inputs, evaluation failures, unsupported writes and invalid values; callers match variants rather than error text.
+Device schemas, descriptors and rule expressions remain JSON so a new declarative platform needs no Rust type change.
+
+`Driver::descriptor`, `values`, `dps`, `linked`, `synced`, `timers`, `settings_block` and `carry` expose the host-facing
+state. `merge_rules(Some(&pack), layers, tolerant)` returns a validated `RuleComposition` with its pack, sources and
+warnings. `snapshot` / `restore` transfer version-specific state using the same ordered rule fingerprint; malformed
+state or a different pack is rejected. Snapshots remain opaque, nondurable data.
+
+Each driver owns its mutable state and an `Arc<RulePack>`. Dropping the last owner releases its rules through RAII;
+the native API uses no process-global registry. Transactions share immutable device interpretation, descriptors
+and converter programs through `Arc`, and copy mutable state to preserve rollback on failure. During a packet,
+properties of the same plan reuse their computed state; assumed roles and different delta totals stay separate.
 
 ## C ABI
 
@@ -177,6 +224,11 @@ platform classification and expression bindings execute in declaration order. Re
 validated by the same schema. Operations that interpret devices require a pack; an unknown ID is an error.
 `handle` verifies the ordered content fingerprint saved at creation, so replacing rules requires a new driver.
 The registry caches rules, never device state.
+
+`{"op": "remove_rules", "rules_id": "<content id>"}` releases a registry entry and returns whether it existed.
+Only remove a pack after its last JSON-ABI driver stops using the ID; later requests with that ID fail until it is
+installed again. Python provides `tuya2ildevice.native.unregister_rules(id)` and JavaScript `engine.remove(id)`.
+Existing drivers still verify the content fingerprint if the ID is reinstalled.
 
 | `op` | Request fields | Result |
 | --- | --- | --- |
@@ -217,6 +269,7 @@ runtime dependencies.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 pip install -e '.[test]'
 python -m pytest -q
@@ -255,3 +308,10 @@ active/passive packets, writes, disconnect and reconnect. The Rust test runner c
 them without Python; the adapter tests compare Rust with Tuya SDK 0.2.15. Do not
 rewrite expected data to conceal a failing test: for new intended behavior, review the
 rule change and update the affected traces and goldens deliberately.
+
+The native Rust API also replays every frozen trace. Converter regressions cover effects from each method,
+transaction rollback, partial override composition, malformed declarations and allocation limits. To compare
+in-memory calls with JSON transport, run `cargo run --locked --release --manifest-path rust/Cargo.toml --example
+benchmark -- 5000`. `scripts/benchmark_abi.py <library> 2000` compares shared-library revisions with the same Python
+and ctypes transport. Measurements exclude driver construction and use five rounds of alternating DP pushes.
+See [local performance measurements](performance.md) for the recorded baseline comparison and API timings.

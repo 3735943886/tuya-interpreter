@@ -30,6 +30,10 @@ quirks, delta accumulation and cover state to Rust through a JSON C ABI. The whe
 the native library; building from source requires Cargo (Rust 1.88 or newer). Another language binds the same two C
 functions (see [the engine documentation](docs/rust-engine.md)).
 
+Rust hosts can use `RulePack`, `Driver`, `DriverOptions`, `Input` and `Output` directly, keeping device
+state in memory without serializing it for each packet. Packs are caller-owned `Arc`s; failed inputs
+leave the driver unchanged. See [the Rust API](docs/rust-engine.md#native-rust-api).
+
 [`rules/00-default.json`](rules/00-default.json) is the canonical rule pack. Every device interpretation is data:
 platform/category tables, and per platform an entity spec — its roles and their DP candidates, how a plan is built,
 the state it reads, the actions it writes and the properties it lays out — plus units, mappings, feature bits and

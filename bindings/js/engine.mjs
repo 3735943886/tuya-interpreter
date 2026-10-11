@@ -43,6 +43,11 @@ export class Engine {
     this.call({ op: "install_rules", rules_id: rulesId, rules });
     return rulesId;
   }
+
+  /** Release a registered pack only after its last driver stops using the ID. */
+  remove(rulesId) {
+    return this.call({ op: "remove_rules", rules_id: rulesId });
+  }
 }
 
 /** One transport-independent Tuya device. Rules and time are supplied by the host. */

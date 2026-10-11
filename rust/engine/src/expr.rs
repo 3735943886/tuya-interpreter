@@ -3,6 +3,7 @@
 //! Expressions are JSON objects with an `op`; any other JSON value is a literal. Programs are
 //! statement arrays. Evaluation is pure: no I/O, clock, imports or host callbacks, and every
 //! evaluation is bounded by an instruction budget and a nesting limit.
+use crate::EngineError;
 use crate::adapter::{b64, electricity, hexbytes, hsv_rgb, rgb_hsv};
 use crate::data::*;
 use serde_json::{Map, Value as V, json};
@@ -12,6 +13,42 @@ use std::ops::{Deref, DerefMut};
 const EVAL_LIMIT: usize = 1_000_000;
 const DEPTH_LIMIT: usize = 64;
 pub const STATEMENT_LIMIT: usize = 10_000;
+const VALUE_LIMIT: usize = 100_000;
+const TEXT_LIMIT: usize = 1_048_576;
+
+fn bounded(value: &V) -> Result<(usize, usize), String> {
+    fn visit(value: &V, nodes: &mut usize, bytes: &mut usize, depth: usize) -> Result<(), String> {
+        if depth >= DEPTH_LIMIT {
+            return Err("rule nesting limit exceeded".into());
+        }
+        *nodes += 1;
+        if *nodes > VALUE_LIMIT {
+            return Err("rule value size limit exceeded".into());
+        }
+        match value {
+            V::String(text) => *bytes = bytes.saturating_add(text.len()),
+            V::Array(values) => {
+                for value in values {
+                    visit(value, nodes, bytes, depth + 1)?;
+                }
+            }
+            V::Object(fields) => {
+                for (key, value) in fields {
+                    *bytes = bytes.saturating_add(key.len());
+                    visit(value, nodes, bytes, depth + 1)?;
+                }
+            }
+            _ => {}
+        }
+        if *bytes > TEXT_LIMIT {
+            return Err("rule text size limit exceeded".into());
+        }
+        Ok(())
+    }
+    let (mut nodes, mut bytes) = (0, 0);
+    visit(value, &mut nodes, &mut bytes, 0)?;
+    Ok((nodes, bytes))
+}
 
 /// A frame value: borrowed from the caller or owned by the scope.
 pub trait Frame<'a> {
@@ -36,6 +73,8 @@ pub struct Scope<'a> {
     functions: &'a V,
     budget: usize,
     depth: usize,
+    allocation_nodes: usize,
+    allocation_bytes: usize,
 }
 
 /// Restores a scope's frames when dropped, so temporary bindings cannot leak.
@@ -71,6 +110,8 @@ impl<'a> Scope<'a> {
             functions,
             budget: EVAL_LIMIT,
             depth: 0,
+            allocation_nodes: EVAL_LIMIT,
+            allocation_bytes: 16 * TEXT_LIMIT,
         }
     }
 
@@ -142,6 +183,7 @@ impl<'a> Scope<'a> {
 
     pub fn eval(&mut self, e: &V) -> Result<V, String> {
         let Some(op) = e.get("op").and_then(V::as_str) else {
+            self.charge(e)?;
             return Ok(e.clone());
         };
         self.budget = self
@@ -154,7 +196,22 @@ impl<'a> Scope<'a> {
         self.depth += 1;
         let result = self.op(op, e);
         self.depth -= 1;
-        result
+        let result = result?;
+        self.charge(&result)?;
+        Ok(result)
+    }
+
+    fn charge(&mut self, value: &V) -> Result<(), String> {
+        let (nodes, bytes) = bounded(value)?;
+        self.allocation_nodes = self
+            .allocation_nodes
+            .checked_sub(nodes)
+            .ok_or("rule allocation limit exceeded")?;
+        self.allocation_bytes = self
+            .allocation_bytes
+            .checked_sub(bytes)
+            .ok_or("rule allocation limit exceeded")?;
+        Ok(())
     }
 
     fn eval_args(&mut self, e: &V) -> Result<Vec<V>, String> {
@@ -165,11 +222,11 @@ impl<'a> Scope<'a> {
     fn each(&mut self, e: &V, mut visit: impl FnMut(V, &V) -> bool) -> Result<(), String> {
         let list = self.eval(&e["args"][0])?;
         let name = e.get("as").map(s).unwrap_or("item").to_string();
-        for item in arr(&list) {
+        for item in items(&list) {
             let mut inner = self.mark();
             inner.push(&name, item.clone());
             let result = inner.eval(&e["do"])?;
-            if !visit(item, &result) {
+            if !visit(item.clone(), &result) {
                 break;
             }
         }
@@ -313,6 +370,14 @@ impl<'a> Scope<'a> {
         let arg = |i: usize| args.get(i).unwrap_or(&V::Null);
         let (a, b) = (arg(0), arg(1));
         let numbers = |xs: &[&V]| xs.iter().all(|x| x.is_number());
+        if ["concat", "flatten", "list", "zip", "object"].contains(&op) {
+            let nodes = args.iter().try_fold(0usize, |sum, v| {
+                bounded(v).map(|(nodes, _)| sum.saturating_add(nodes))
+            })?;
+            if nodes > VALUE_LIMIT {
+                return Err("rule value size limit exceeded".into());
+            }
+        }
         Ok(match op {
             "eq" => json!(eq(a, b)),
             "same" => json!(a == b),
@@ -426,7 +491,13 @@ impl<'a> Scope<'a> {
                     .map(|(x, y)| json!([x, y]))
                     .collect(),
             ),
-            "range" => V::Array((0..n(a).max(0.0) as usize).map(|i| json!(i)).collect()),
+            "range" => {
+                let count = n(a).max(0.0);
+                if !count.is_finite() || count >= VALUE_LIMIT as f64 {
+                    return Err("rule value size limit exceeded".into());
+                }
+                V::Array((0..count as usize).map(|i| json!(i)).collect())
+            }
             "keys" => V::Array(fields(a).map(|(k, _)| json!(k)).collect()),
             "values" => V::Array(fields(a).map(|(_, v)| v.clone()).collect()),
             "entries" => V::Array(fields(a).map(|(k, v)| json!([k, v])).collect()),
@@ -439,7 +510,17 @@ impl<'a> Scope<'a> {
             "codes" => json!(codes(a)),
             "text" => json!(s(a)),
             "to_string" => json!(text(a)),
-            "str_concat" => json!(args.iter().map(text).collect::<String>()),
+            "str_concat" => {
+                let mut out = String::new();
+                for arg in &args {
+                    let part = text(arg);
+                    if out.len().saturating_add(part.len()) > TEXT_LIMIT {
+                        return Err("rule text size limit exceeded".into());
+                    }
+                    out.push_str(&part);
+                }
+                json!(out)
+            }
             "lower" => a.as_str().map_or(V::Null, |t| json!(t.to_lowercase())),
             "capitalize" => a.as_str().map_or(V::Null, |t| {
                 let mut chars = t.chars();
@@ -459,10 +540,28 @@ impl<'a> Scope<'a> {
             "trim_end" => a
                 .as_str()
                 .map_or(V::Null, |t| json!(t.trim_end_matches(s(b)))),
-            "replace" => a
-                .as_str()
-                .map_or(V::Null, |t| json!(t.replace(s(b), s(arg(2))))),
-            "hex" => json!(format!("{:0width$x}", n(a) as i64, width = n(b) as usize)),
+            "replace" => {
+                if let Some(t) = a.as_str() {
+                    let count = t.matches(s(b)).count();
+                    let size = t
+                        .len()
+                        .saturating_sub(count.saturating_mul(s(b).len()))
+                        .saturating_add(count.saturating_mul(s(arg(2)).len()));
+                    if size > TEXT_LIMIT {
+                        return Err("rule text size limit exceeded".into());
+                    }
+                    json!(t.replace(s(b), s(arg(2))))
+                } else {
+                    V::Null
+                }
+            }
+            "hex" => {
+                let width = n(b);
+                if !width.is_finite() || width < 0.0 || width > TEXT_LIMIT as f64 {
+                    return Err("rule text size limit exceeded".into());
+                }
+                json!(format!("{:0width$x}", n(a) as i64, width = width as usize))
+            }
             "hex_ints" => hex_ints(a, n(b) as usize, n(arg(2)) as usize),
             "parse_json" => parse(a),
             "b64_utf8" => b64(a)
@@ -592,16 +691,20 @@ pub enum Flow {
 
 /// The statements a program's host understands beyond the shared control flow.
 pub trait Effects {
-    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, String>;
+    fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError>;
 }
 
 /// Run a statement array. `if`/`then`/`else` and `let` are shared; other statements go to `fx`.
-pub fn run(
+fn run(
     program: &V,
     scope: &mut Scope,
     fx: &mut impl Effects,
     budget: &mut usize,
-) -> Result<Flow, String> {
+    depth: usize,
+) -> Result<Flow, EngineError> {
+    if depth >= DEPTH_LIMIT {
+        return Err("rule nesting limit exceeded".into());
+    }
     if !program.is_null() && !program.is_array() {
         return Err("rule program must be an array".into());
     }
@@ -615,13 +718,13 @@ pub fn run(
             } else {
                 &stmt["else"]
             };
-            run(branch, scope, fx, budget)?
+            run(branch, scope, fx, budget, depth + 1)?
         } else if let Some(name) = stmt.get("$use") {
             let program = scope
                 .get("rules")
                 .map(|rules| rules["templates"][s(name)].clone())
                 .ok_or("templates need a rule pack")?;
-            run(&program, scope, fx, budget)?
+            run(&program, scope, fx, budget, depth + 1)?
         } else if let Some(name) = stmt.get("let") {
             let value = scope.eval(&stmt["value"])?;
             scope.set(s(name), value);
@@ -637,8 +740,8 @@ pub fn run(
 }
 
 /// Run a program with a fresh statement budget.
-pub fn execute(program: &V, scope: &mut Scope, fx: &mut impl Effects) -> Result<Flow, String> {
-    run(program, scope, fx, &mut STATEMENT_LIMIT.clone())
+pub fn execute(program: &V, scope: &mut Scope, fx: &mut impl Effects) -> Result<Flow, EngineError> {
+    run(program, scope, fx, &mut STATEMENT_LIMIT.clone(), 0)
 }
 
 /// A `set` target as path parts: `"config.mode"` or `["config", "mode"]`.

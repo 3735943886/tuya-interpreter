@@ -29,4 +29,6 @@ other.constants.manufacturer = "Other vendor";
 engine.install(other, "other");
 assert.throws(() => engine.call({ op: "handle", rules_id: "other", driver: plug.state,
   input: { type: "connected" }, now: 4 }), /do not match/);
+assert.equal(engine.remove("other"), true);
+assert.equal(engine.remove("other"), false);
 console.log("ok: bidirectional transport-independent driver from JavaScript");

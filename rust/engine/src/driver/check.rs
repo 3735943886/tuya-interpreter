@@ -1,15 +1,16 @@
 //! il.md section 5: a write checked against the descriptor before anything is sent.
+use crate::RejectCode;
 use crate::data::*;
 use serde_json::{Value as V, json};
 
-pub fn check(desc: &V, state: &V, prop: &str, value: &V) -> Result<V, (String, String)> {
-    let error = |code: &str, reason: String| Err((code.into(), reason));
+pub fn check(desc: &V, state: &V, prop: &str, value: &V) -> Result<V, (RejectCode, String)> {
+    let error = |code: RejectCode, reason: String| Err((code, reason));
     let Some(p) = desc["props"].get(prop) else {
-        return error("unknown_property", prop.into());
+        return error(RejectCode::UnknownProperty, prop.into());
     };
     let t = s(&p["type"]);
     if t == "event" || !truth(&p["rw"]) && t != "trigger" {
-        return error("read_only", prop.into());
+        return error(RejectCode::ReadOnly, prop.into());
     }
     if let Some(req) = p.get("requires") {
         let ok = if req.is_string() {
@@ -20,7 +21,7 @@ pub fn check(desc: &V, state: &V, prop: &str, value: &V) -> Result<V, (String, S
                 .any(|v| eq(v, &state[s(&req["prop"])]))
         };
         if !ok {
-            return error("requires_unmet", format!("{prop} requires {req}"));
+            return error(RejectCode::RequiresUnmet, format!("{prop} requires {req}"));
         }
     }
     match t {
@@ -39,24 +40,27 @@ pub fn check(desc: &V, state: &V, prop: &str, value: &V) -> Result<V, (String, S
             match key.as_str() {
                 "on" | "true" | "1" => Ok(json!(true)),
                 "off" | "false" | "0" => Ok(json!(false)),
-                _ => error("invalid_value", format!("not a boolean: {value}")),
+                _ => error(RejectCode::InvalidValue, format!("not a boolean: {value}")),
             }
         }
         "number" => {
             if !value.is_number() {
-                return error("invalid_value", format!("not a finite number: {value}"));
+                return error(
+                    RejectCode::InvalidValue,
+                    format!("not a finite number: {value}"),
+                );
             }
             let v = n(value);
             let lo = &p["min"];
             let hi = &p["max"];
             if (!lo.is_null() && v < n(lo)) || (!hi.is_null() && v > n(hi)) {
-                return error("out_of_range", format!("{lo}..{hi}"));
+                return error(RejectCode::OutOfRange, format!("{lo}..{hi}"));
             }
             let step = n(&p["step"]);
             if step != 0.0 {
                 let q = (v - n(lo)) / step;
                 if (q - q.round_ties_even()).abs() * step.abs() > 1e-9 {
-                    return error("bad_step", format!("step {step} from {}", n(lo)));
+                    return error(RejectCode::BadStep, format!("step {step} from {}", n(lo)));
                 }
             }
             Ok(value.clone())
@@ -65,16 +69,19 @@ pub fn check(desc: &V, state: &V, prop: &str, value: &V) -> Result<V, (String, S
             if items(&p["options"]).contains(value) {
                 Ok(value.clone())
             } else {
-                error("invalid_value", format!("not one of {}", p["options"]))
+                error(
+                    RejectCode::InvalidValue,
+                    format!("not one of {}", p["options"]),
+                )
             }
         }
         "text" => {
             if value.is_string() && !s(value).is_empty() {
                 Ok(value.clone())
             } else {
-                error("invalid_value", "non-empty string required".into())
+                error(RejectCode::InvalidValue, "non-empty string required".into())
             }
         }
-        _ => error("unsupported", format!("type {t}")),
+        _ => error(RejectCode::Unsupported, format!("type {t}")),
     }
 }

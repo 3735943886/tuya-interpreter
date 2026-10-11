@@ -1,3 +1,4 @@
+use crate::EngineError;
 use crate::data::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use indexmap::IndexMap;
@@ -420,7 +421,7 @@ pub fn strategy_read(name: &str, raw: &V, ci: &V, rules: &V) -> Result<V, String
         _ => Ok(raw.clone()),
     }
 }
-pub fn strategy_write(name: &str, v: &V, ci: &V) -> Result<V, String> {
+pub fn strategy_write(name: &str, v: &V, ci: &V) -> Result<V, EngineError> {
     let o = parse(v);
     let text = s(v);
     let hex = |k: &str, w: usize| format!("{:0width$x}", n(&o[k]) as i64, width = w);
@@ -520,7 +521,9 @@ pub fn strategy_write(name: &str, v: &V, ci: &V) -> Result<V, String> {
             }
             Ok(json!(STANDARD.encode(b)))
         }
-        _ => Err("unsupported: this dp's value conversion has no inverse".into()),
+        _ => Err(EngineError::Unsupported(
+            "this dp's value conversion has no inverse".into(),
+        )),
     }
 }
 impl Adapter {
@@ -595,12 +598,12 @@ impl Adapter {
         }
         out
     }
-    pub fn write(&self, commands: &[V]) -> Result<V, String> {
+    pub fn write(&self, commands: &[V]) -> Result<V, EngineError> {
         let mut out = json!({});
         for c in commands {
             let code = s(&c["code"]);
             let Some((id, (_, name, ci))) = self.entries.iter().find(|(_, e)| e.0 == code) else {
-                return Err(format!("unsupported: no dp for {code}"));
+                return Err(EngineError::Unsupported(format!("no dp for {code}")));
             };
             let mut v = self.flip(code, &c["value"]);
             if let Some((key, _)) = fields(&self.remaps[code]["alias"]).find(|(_, std)| **std == v)
@@ -610,7 +613,7 @@ impl Adapter {
             out[id] = strategy_write(name, &v, ci)?;
         }
         if !truth(&out) {
-            return Err("unsupported: no dp for command".into());
+            return Err(EngineError::Unsupported("no dp for command".into()));
         }
         Ok(out)
     }

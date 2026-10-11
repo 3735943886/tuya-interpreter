@@ -1,4 +1,5 @@
 //! ildevice properties from entity plans, laid out by each entity spec's `layout` rows.
+use crate::EngineError;
 use crate::data::*;
 use crate::entity::{Entity, shared};
 use crate::expr::{Scope, text};
@@ -6,6 +7,8 @@ use crate::plan::Plan;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
+use std::collections::HashMap;
+use std::{borrow::Cow, sync::Arc};
 
 /// Where a property's value comes from and where its writes go.
 #[derive(Clone, Serialize, Deserialize)]
@@ -65,7 +68,7 @@ impl Binding {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Assembly {
-    pub descriptor: V,
+    pub descriptor: Arc<V>,
     pub bindings: IndexMap<String, Binding>,
     pub unsupported: Vec<String>,
     pub covers: Vec<(usize, String, Option<String>, bool)>,
@@ -227,7 +230,7 @@ pub fn assemble(
         descriptor["groups"] = groups;
     }
     Ok(Assembly {
-        descriptor,
+        descriptor: Arc::new(descriptor),
         bindings,
         unsupported,
         covers,
@@ -235,23 +238,49 @@ pub fn assemble(
 }
 
 impl Binding {
-    pub fn read(&self, plans: &[Plan], st: &V, rules: &V, definition: &V) -> Result<V, String> {
+    pub fn read(
+        &self,
+        plans: &[Plan],
+        st: &V,
+        rules: &V,
+        definition: &V,
+        cache: &mut ReadCache,
+    ) -> Result<V, String> {
         match &self.source {
             Source::Dp { role, .. } => Ok(dp_read(role, st, definition)),
             Source::Layout { plan, row } => {
                 let (p, row, entity) = layout(plans, *plan, *row, rules)?;
-                let mut status = st.clone();
+                let mut status = Cow::Borrowed(st);
                 for (role, value) in fields(&row["assume"]) {
                     if let Some(r) = p.role(role) {
-                        status[&r.code] = value.clone();
+                        status.to_mut()[&r.code] = value.clone();
                     }
                 }
-                let state = p.read(&status, self.total, rules)?;
-                let v = entity
-                    .scope(p, &status)
-                    .with("state", state)
-                    .with("definition", definition)
-                    .eval(&row["read"])?;
+                let v = if matches!(status, Cow::Borrowed(_)) {
+                    let key = (*plan, self.total.to_bits());
+                    if let std::collections::hash_map::Entry::Vacant(entry) = cache.0.entry(key) {
+                        entry.insert(ReadFrame {
+                            state: p.read(st, self.total, rules)?,
+                            roles: crate::entity::views(&p.roles),
+                            values: crate::entity::values(&p.roles, st),
+                        });
+                    }
+                    let frame = &cache.0[&key];
+                    entity
+                        .base_scope(p, st)
+                        .with("roles", &frame.roles)
+                        .with("values", &frame.values)
+                        .with("state", &frame.state)
+                        .with("definition", definition)
+                        .eval(&row["read"])?
+                } else {
+                    let state = p.read(&status, self.total, rules)?;
+                    entity
+                        .scope(p, &status)
+                        .with("state", state)
+                        .with("definition", definition)
+                        .eval(&row["read"])?
+                };
                 Ok(il_value(v, definition))
             }
             _ => Ok(V::Null),
@@ -265,7 +294,7 @@ impl Binding {
         st: &V,
         rules: &V,
         definition: &V,
-    ) -> Result<Vec<V>, String> {
+    ) -> Result<Vec<V>, EngineError> {
         match &self.source {
             Source::Dp {
                 role,
@@ -274,7 +303,9 @@ impl Binding {
                 ..
             } => {
                 let v = if *trigger { send } else { value };
-                Ok(vec![json!({"code":role.code,"value":role.write(v)?})])
+                Ok(vec![
+                    json!({"code":role.code,"value":role.write(v).map_err(EngineError::InvalidValue)?}),
+                ])
             }
             Source::Layout { plan, row } => {
                 let (p, row, entity) = layout(plans, *plan, *row, rules)?;
@@ -287,13 +318,22 @@ impl Binding {
                     .eval(&row["write"])?;
                 p.write(s(&call["action"]), &call["args"], st, rules)
             }
-            _ => Err("unsupported: no write path".into()),
+            _ => Err(EngineError::Unsupported("no write path".into())),
         }
     }
 }
 
+/// A packet-local cache; assumed roles and independently accumulated totals never share state.
+#[derive(Default)]
+pub(crate) struct ReadCache(HashMap<(usize, u64), ReadFrame>);
+struct ReadFrame {
+    state: V,
+    roles: V,
+    values: V,
+}
+
 /// ildevice value rules: a select value outside its options is unknown; numbers are canonical.
-fn il_value(v: V, definition: &V) -> V {
+pub(crate) fn il_value(v: V, definition: &V) -> V {
     if definition["type"] == "select" && !v.is_null() && !items(&definition["options"]).contains(&v)
     {
         V::Null

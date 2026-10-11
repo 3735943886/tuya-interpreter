@@ -1,3 +1,4 @@
+use crate::DpKind;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as V, json};
@@ -64,16 +65,7 @@ pub fn parse(v: &V) -> V {
     }
 }
 pub fn normalized(t: &str) -> &str {
-    match t {
-        "Integer" | "value" => "Integer",
-        "Boolean" | "bool" => "Boolean",
-        "Enum" | "enum" => "Enum",
-        "Bitmap" | "bitmap" => "Bitmap",
-        "Json" | "json" => "Json",
-        "Raw" | "raw" => "Raw",
-        "String" | "string" => "String",
-        _ => "",
-    }
+    DpKind::parse(t).map(DpKind::as_str).unwrap_or("")
 }
 pub fn merge(dst: &mut V, src: &V) {
     if let (Some(d), Some(sr)) = (dst.as_object_mut(), src.as_object()) {
@@ -90,7 +82,7 @@ pub fn merge(dst: &mut V, src: &V) {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Role {
     pub code: String,
-    pub kind: String,
+    pub kind: DpKind,
     pub spec: V,
     pub report_type: V,
 }
@@ -123,22 +115,22 @@ impl Role {
     }
     pub fn read(&self, st: &V) -> V {
         let raw = &st[&self.code];
-        match self.kind.as_str() {
-            "Boolean" => {
+        match self.kind {
+            DpKind::Boolean => {
                 if !raw.is_null() && (eq(raw, &json!(true)) || eq(raw, &json!(false))) {
                     raw.clone()
                 } else {
                     V::Null
                 }
             }
-            "Enum" => {
+            DpKind::Enum => {
                 if items(&self.spec["range"]).contains(raw) {
                     raw.clone()
                 } else {
                     V::Null
                 }
             }
-            "Integer" => {
+            DpKind::Integer => {
                 if (raw.is_i64() || raw.is_u64() || raw.is_boolean())
                     && n(raw) >= self.lo()
                     && n(raw) <= self.hi()
@@ -156,22 +148,22 @@ impl Role {
         }
     }
     pub fn write(&self, v: &V) -> Result<V, String> {
-        match self.kind.as_str() {
-            "Boolean" => {
+        match self.kind {
+            DpKind::Boolean => {
                 if v.is_boolean() {
                     Ok(v.clone())
                 } else {
                     Err("invalid boolean value".into())
                 }
             }
-            "Enum" => {
+            DpKind::Enum => {
                 if v.is_string() && items(&self.spec["range"]).contains(v) {
                     Ok(v.clone())
                 } else {
                     Err("invalid enum value".into())
                 }
             }
-            "Integer" => {
+            DpKind::Integer => {
                 if !v.is_number() && !v.is_boolean() {
                     return Err("invalid numeric value".into());
                 }
@@ -238,7 +230,7 @@ pub fn resolve(
             }
             return Ok(Some(Role {
                 code: code.clone(),
-                kind: kind.into(),
+                kind: DpKind::parse(kind).ok_or("invalid dp kind")?,
                 spec,
                 report_type: device["status_range"][code]["report_type"].clone(),
             }));
@@ -366,7 +358,7 @@ pub fn device_info(device: &V, quirk: &V, rules: &V) -> V {
 /// The command words a cover instruction role uses: the first named map whose open and close
 /// words it accepts, else the first map.
 pub fn cover_words(role: &Role, names: &V, rules: &V) -> V {
-    if role.kind == "Boolean" {
+    if role.kind == DpKind::Boolean {
         return json!({"open":true,"close":false,"stop":{"never":true}});
     }
     let range = role.range();

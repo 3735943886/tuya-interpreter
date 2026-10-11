@@ -49,6 +49,11 @@ def register_rules(pack):
     return identifier
 
 
+def unregister_rules(identifier):
+    """Release a registered pack after its last driver stops using this ID."""
+    return _call({'op': 'remove_rules', 'rules_id': identifier})
+
+
 def call(op, **payload):
     """Evaluate an operation using explicit request data; never load rules implicitly."""
     return _call({'op': op, **payload})

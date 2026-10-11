@@ -1,5 +1,6 @@
 //! Cover settings and the motion tracker that derives a cover's `cover_state`.
 use crate::entity::Entity;
+use crate::{MotionState, StateSource};
 use crate::{assembly::*, data::*, plan::Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
@@ -23,8 +24,8 @@ pub struct Cover {
 }
 impl Cover {
     /// Where `cover_state` comes from; `None` gives the cover no `cover_state` at all.
-    pub fn source(&self) -> Option<&str> {
-        self.settings["state_source"].as_str()
+    pub fn source(&self) -> Option<StateSource> {
+        serde_json::from_value(self.settings["state_source"].clone()).ok()
     }
     /// Motion can be inferred only from a position and something that says a move began.
     pub fn can_infer(&self) -> bool {
@@ -39,7 +40,9 @@ impl Cover {
         match k {
             "position_from_target" => self.position_choice,
             "state_source" => self.cur.is_some() || self.ins.is_some(),
-            "invert_reported_motion" => self.ins.is_some() && self.source() == Some("control"),
+            "invert_reported_motion" => {
+                self.ins.is_some() && self.source() == Some(StateSource::Control)
+            }
             "invert_position" => self.cur.is_some(),
             "invert_set_position" => self.separate(),
             "invert_control" => self.ins.is_some() && self.setp.is_none(),
@@ -63,9 +66,9 @@ pub struct Motion {
     pub position: Option<String>,
     pub words: V,
     pub settle: f64,
-    pub mode: String,
+    pub mode: StateSource,
     pub invert_report: bool,
-    pub state: Option<String>,
+    pub state: Option<MotionState>,
     pub target: Option<f64>,
     pub by_word: bool,
     pub last: Option<f64>,
@@ -99,60 +102,47 @@ impl Motion {
         let touched = |code: &Option<String>| code.as_ref().is_some_and(|c| changed.contains(c));
         let mut state = None;
         let mut timer_out = None;
-        if self.mode != "inferred" {
+        if self.mode != StateSource::Inferred {
             if !touched(&self.command) && !touched(&self.position) {
                 return (json!({}), None);
             }
-            if active && self.mode == "control" && touched(&self.command) {
+            if active && self.mode == StateSource::Control && touched(&self.command) {
                 let word = &st[self.command.as_deref().unwrap_or("")];
                 if *word == self.words["stop"] {
-                    state = Some("stopped".to_string());
+                    state = Some(MotionState::Stopped);
                 } else if *word == self.words["open"] {
-                    state = Some(
-                        if self.invert_report {
-                            "closing"
-                        } else {
-                            "opening"
-                        }
-                        .to_string(),
-                    );
+                    state = Some(if self.invert_report {
+                        MotionState::Closing
+                    } else {
+                        MotionState::Opening
+                    });
                 } else if *word == self.words["close"] {
-                    state = Some(
-                        if self.invert_report {
-                            "opening"
-                        } else {
-                            "closing"
-                        }
-                        .to_string(),
-                    );
+                    state = Some(if self.invert_report {
+                        MotionState::Opening
+                    } else {
+                        MotionState::Closing
+                    });
                 }
                 if let Some(ref s) = state {
-                    self.state = Some(s.clone());
+                    self.state = Some(*s);
                     return (json!({self.prop.clone():s}), None);
                 }
             }
             if active
-                && self.mode == "control"
-                && self
-                    .state
-                    .as_deref()
-                    .is_some_and(|s| s == "opening" || s == "closing")
+                && self.mode == StateSource::Control
+                && self.state.is_some_and(MotionState::moving)
             {
                 return (json!({}), None);
             }
             self.reset();
             return (
-                json!({self.prop.clone():pos.map(|p|if p<=0.0{"closed"}else if p>=100.0{"open"}else{"stopped"})}),
+                json!({self.prop.clone():pos.map(MotionState::resting)}),
                 None,
             );
         }
         if timer {
-            if self
-                .state
-                .as_deref()
-                .is_some_and(|s| s == "opening" || s == "closing")
-            {
-                state = Some("stopped".into());
+            if self.state.is_some_and(MotionState::moving) {
+                state = Some(MotionState::Stopped);
             } else {
                 return (json!({}), None);
             }
@@ -160,19 +150,19 @@ impl Motion {
             if pos.is_some()
                 && (touched(&self.command) || touched(&self.position) || touched(&self.target_code))
             {
-                state = Some("stopped".into());
+                state = Some(MotionState::Stopped);
             }
         } else {
             if touched(&self.command) {
                 let word = &st[self.command.as_deref().unwrap_or("")];
                 if *word == self.words["stop"] {
-                    state = Some("stopped".into());
+                    state = Some(MotionState::Stopped);
                 } else if *word == self.words["open"] {
-                    state = Some("opening".into());
+                    state = Some(MotionState::Opening);
                     self.target = Some(100.0);
                     self.by_word = true;
                 } else if *word == self.words["close"] {
-                    state = Some("closing".into());
+                    state = Some(MotionState::Closing);
                     self.target = Some(0.0);
                     self.by_word = true;
                 }
@@ -184,79 +174,68 @@ impl Motion {
                     let target = n(raw);
                     self.target = Some(target);
                     self.by_word = false;
-                    state = Some(
-                        if target == position {
-                            "stopped"
-                        } else if target > position {
-                            "opening"
-                        } else {
-                            "closing"
-                        }
-                        .into(),
-                    );
+                    state = Some(if target == position {
+                        MotionState::Stopped
+                    } else if target > position {
+                        MotionState::Opening
+                    } else {
+                        MotionState::Closing
+                    });
                 }
             } else if touched(&self.position)
                 && let Some(p) = pos
-                && self
-                    .state
-                    .as_deref()
-                    .is_some_and(|s| s == "opening" || s == "closing")
+                && self.state.is_some_and(MotionState::moving)
             {
                 if self.by_word
                     && let Some(last) = last
                     && last != p
                 {
-                    let heading = if p > last { "opening" } else { "closing" };
-                    if self.state.as_deref() != Some(heading) {
-                        state = Some(heading.into());
-                        self.target = Some(if heading == "opening" { 100.0 } else { 0.0 });
+                    let heading = if p > last {
+                        MotionState::Opening
+                    } else {
+                        MotionState::Closing
+                    };
+                    if self.state != Some(heading) {
+                        state = Some(heading);
+                        self.target = Some(if heading == MotionState::Opening {
+                            100.0
+                        } else {
+                            0.0
+                        });
                     }
                 }
-                let moving = state.as_deref().or(self.state.as_deref());
+                let moving = state.or(self.state);
                 if self.target.is_some_and(|t| {
-                    if moving == Some("opening") {
+                    if moving == Some(MotionState::Opening) {
                         p >= t
                     } else {
                         p <= t
                     }
                 }) {
-                    state = Some("stopped".into());
+                    state = Some(MotionState::Stopped);
                 }
             } else if touched(&self.position) && pos.is_some() {
-                state = Some("stopped".into());
+                state = Some(MotionState::Stopped);
             }
             if pos.is_some_and(|p| {
-                (p <= 0.0 && state.as_deref().or(self.state.as_deref()) == Some("closing"))
-                    || (p >= 100.0 && state.as_deref().or(self.state.as_deref()) == Some("opening"))
+                (p <= 0.0 && state.or(self.state) == Some(MotionState::Closing))
+                    || (p >= 100.0 && state.or(self.state) == Some(MotionState::Opening))
             }) {
-                state = Some("stopped".into());
+                state = Some(MotionState::Stopped);
             }
         }
-        let moving = state
-            .as_deref()
-            .or(self.state.as_deref())
-            .is_some_and(|s| s == "opening" || s == "closing")
-            && state.as_deref() != Some("stopped");
+        let moving = state.or(self.state).is_some_and(MotionState::moving);
         if self.settle > 0.0 && !timer {
             timer_out = Some(if moving { Some(self.settle) } else { None });
         }
         let mut vals = json!({});
         if let Some(new) = state {
-            self.state = Some(new.clone());
-            let out = if new == "stopped" {
+            self.state = Some(new);
+            let out = if new == MotionState::Stopped {
                 self.target = None;
                 self.by_word = false;
-                pos.map(|p| {
-                    if p <= 0.0 {
-                        "closed"
-                    } else if p >= 100.0 {
-                        "open"
-                    } else {
-                        "stopped"
-                    }
-                })
-                .unwrap_or("stopped")
-                .to_string()
+                pos.map(MotionState::resting)
+                    .unwrap_or(MotionState::Stopped)
             } else {
                 new
             };

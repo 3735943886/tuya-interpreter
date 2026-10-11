@@ -7,8 +7,7 @@ fn schema() -> Result<&'static Value, String> {
     static SCHEMA: OnceLock<Result<Value, String>> = OnceLock::new();
     SCHEMA
         .get_or_init(|| {
-            serde_json::from_str(include_str!("../schema.json"))
-                .map_err(|e| e.to_string())
+            serde_json::from_str(include_str!("../schema.json")).map_err(|e| e.to_string())
         })
         .as_ref()
         .map_err(Clone::clone)
@@ -121,7 +120,12 @@ fn check(value: &Value, schema: &Value, root: &Value, at: &str) -> Result<(), St
 
 pub fn validate(value: &Value) -> Result<(), String> {
     let schema = schema()?;
-    check(value, schema, schema, "")
+    check(value, schema, schema, "")?;
+    if let Some(overrides) = value.get("overrides") {
+        crate::driver::overrides::validate_mapping(overrides, value)
+            .map_err(|e| format!("override: {e}"))?;
+    }
+    Ok(())
 }
 
 /// One rule layer: a rule object, or `{"source": name, "rules": object}` to name it in reports.
@@ -165,6 +169,10 @@ pub fn compose(input: &Value) -> Result<Value, String> {
                     .as_array()
                     .is_some_and(|keys| keys.iter().all(|k| result.get(s(k)).is_some()));
                 check(&next, if complete { schema } else { &partial }, schema, "")?;
+                if let Some(overrides) = next.get("overrides") {
+                    crate::driver::overrides::validate_mapping(overrides, &next)
+                        .map_err(|e| format!("override: {e}"))?;
+                }
             }
             Ok(next)
         })();
@@ -177,6 +185,6 @@ pub fn compose(input: &Value) -> Result<Value, String> {
             Err(error) => return Err(format!("{source}: {error}")),
         }
     }
-    check(&result, schema, schema, "")?;
+    validate(&result)?;
     Ok(json!({"rules":result,"sources":sources,"warnings":warnings}))
 }

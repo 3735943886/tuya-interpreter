@@ -1,12 +1,11 @@
 //! Override blocks: validated, applied to the device before classification and to the descriptor after.
+use crate::DpKind;
 use crate::{adapter::*, assembly::*, data::*, plan::Plan};
 use serde_json::{Value as V, json};
+use std::sync::Arc;
 
 pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V), String> {
     let mut d = device.clone();
-    if d["id"].as_str().is_none() {
-        return Err("device needs id".into());
-    }
     ensure_tables(&mut d);
     let mut dpmap = json!({});
     let quirk = if options["use_quirks"] == false {
@@ -25,6 +24,9 @@ pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V)
             original[&id] = json!(code);
         }
     }
+    if let Some(mapping) = options.get("overrides") {
+        validate_mapping(mapping, rules)?;
+    }
     let mut overrides = rules["overrides"].clone();
     if !overrides.is_object() {
         overrides = json!({});
@@ -34,10 +36,11 @@ pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V)
     for key in [s(&d["product_id"]), s(&d["id"])] {
         let b = &overrides[key];
         if !b.is_null() {
-            validate(b, rules)?;
+            validate(b, rules, false)?;
             merge(&mut block, b);
         }
     }
+    validate(&block, rules, true)?;
     if truth(&block["category"]) {
         d["category"] = block["category"].clone();
     }
@@ -46,7 +49,7 @@ pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V)
         if patch.get("type").is_none() {
             let old = s(&original[&id]);
             if old.is_empty() {
-                return Err(format!("override: dp.{id}: no dp {id} to rename"));
+                return Err(format!("dp.{id}: no dp {id} to rename"));
             }
             for table in ["function", "status_range", "status"] {
                 if let Some(v) = d[table].as_object_mut().unwrap().remove(old) {
@@ -96,18 +99,18 @@ fn unknown(v: &V, allowed: &[&str]) -> Result<(), String> {
     if let Some(o) = v.as_object() {
         for k in o.keys() {
             if !allowed.contains(&k.as_str()) {
-                return Err(format!("override: unknown key {k}"));
+                return Err(format!("unknown key {k}"));
             }
         }
     } else if !v.is_null() {
-        return Err("override: must be object".into());
+        return Err("must be object".into());
     }
     Ok(())
 }
 /// The converters an override block can turn on.
 const CONVERTERS: [&str; 1] = ["declarative"];
 
-fn validate(b: &V, rules: &V) -> Result<(), String> {
+fn validate(b: &V, rules: &V, complete: bool) -> Result<(), String> {
     unknown(
         b,
         &[
@@ -124,27 +127,40 @@ fn validate(b: &V, rules: &V) -> Result<(), String> {
             "delta",
         ],
     )?;
+    for key in ["dp", "props", "remap", "converters"] {
+        if b.get(key).is_some() && !b[key].is_object() {
+            return Err(format!("{key}: must be object"));
+        }
+    }
+    if b.get("category").is_some() && b["category"].as_str().is_none_or(str::is_empty) {
+        return Err("category: needs a nonempty string".into());
+    }
+    for (key, value) in fields(&b["device"]) {
+        if !value.is_null() && !value.is_string() {
+            return Err(format!("device.{key}: needs a string or null"));
+        }
+    }
     for (_, d) in obj(&b["dp"]) {
         unknown(&d, &["code", "type", "values", "mode", "report_type"])?;
         if !truth(&d["code"]) || d.get("type").is_some() && normalized(s(&d["type"])).is_empty() {
-            return Err("override: invalid dp definition".into());
+            return Err("invalid dp definition".into());
         }
         if d.get("type").is_none() && obj(&d).len() != 1 {
-            return Err("override: a rename takes only a `code`".into());
+            return Err("a rename takes only a `code`".into());
         }
         if d.get("mode").is_some() && !["R", "W", "RW"].contains(&s(&d["mode"])) {
-            return Err("override: invalid mode".into());
+            return Err("invalid mode".into());
         }
     }
     for k in ["auto", "expose_unused"] {
         if b.get(k).is_some() && !b[k].is_boolean() {
-            return Err(format!("override: {k}: true or false"));
+            return Err(format!("{k}: true or false"));
         }
     }
     if b.get("remove").is_some()
         && (!b["remove"].is_array() || items(&b["remove"]).iter().any(|v| !v.is_string()))
     {
-        return Err("override: remove needs list of codes".into());
+        return Err("remove needs list of codes".into());
     }
     unknown(&b["device"], &["kind", "class", "label", "vendor", "model"])?;
     for (_, p) in obj(&b["props"]) {
@@ -162,72 +178,85 @@ fn validate(b: &V, rules: &V) -> Result<(), String> {
                 ]
             },
         )?;
+        if !p.is_object() {
+            return Err("property patch must be object".into());
+        }
+        validate_property(&p, src, false)?;
+        if p.get("hide").is_some() && !p["hide"].is_boolean() {
+            return Err("hide needs bool".into());
+        }
         if !p["role"].is_null() && !p["role"].is_string() {
-            return Err("override: invalid role".into());
+            return Err("invalid role".into());
         }
         if p.get("rw").is_some() && (!p["rw"].is_boolean() || !src && p["rw"] != false) {
-            return Err("override: rw can only be false".into());
+            return Err("rw can only be false".into());
         }
         if src {
             if !p["src"].is_string() || !truth(&p["src"]) {
-                return Err("override: src needs code".into());
+                return Err("src needs code".into());
             }
             if p.get("type").is_some()
                 && !["binary", "number", "select", "text", "trigger"].contains(&s(&p["type"]))
             {
-                return Err("override: invalid property type".into());
+                return Err("invalid property type".into());
             }
             if (p["type"] == "trigger") != p.get("send").is_some() {
-                return Err("override: trigger needs send".into());
+                return Err("trigger needs send".into());
             }
         } else {
             if !p["category"].is_null()
                 && p["category"] != "diagnostic"
                 && p["category"] != "config"
             {
-                return Err("override: invalid category".into());
+                return Err("invalid category".into());
             }
             if !p["series"].is_null() && p["series"] != "counter" && p["series"] != "gauge" {
-                return Err("override: invalid series".into());
+                return Err("invalid series".into());
             }
         }
     }
     for (_, r) in obj(&b["remap"]) {
         unknown(&r, &["alias", "invert"])?;
+        if !r.is_object() {
+            return Err("remap needs object".into());
+        }
         if r.get("invert").is_some() && !r["invert"].is_boolean() {
-            return Err("override: invert needs bool".into());
+            return Err("invert needs bool".into());
         }
         if !r["alias"].is_null() && !r["alias"].is_object() {
-            return Err("override: alias needs object".into());
+            return Err("alias needs object".into());
         }
         let values: Vec<_> = obj(&r["alias"]).values().cloned().collect();
         for (i, v) in values.iter().enumerate() {
+            if !v.is_string() {
+                return Err("alias values need strings".into());
+            }
             if values[..i].contains(v) {
-                return Err("override: duplicate alias".into());
+                return Err("duplicate alias".into());
             }
         }
     }
     fn cover(c: &V, rules: &V, nested: bool) -> Result<(), String> {
         if !c.is_object() {
-            return Err("override: cover needs object".into());
+            return Err("cover needs object".into());
         }
         for (k, v) in obj(c) {
             if k == "settle" {
                 if !v.is_number() || n(&v) < 0.0 {
-                    return Err("override: invalid settle".into());
+                    return Err("invalid settle".into());
                 }
             } else if k == "state_source" {
                 if !["control", "inferred", "none"].contains(&s(&v)) {
-                    return Err("override: invalid state_source".into());
+                    return Err("invalid state_source".into());
                 }
             } else if rules["cover_defaults"].get(&k).is_some() {
                 if !v.is_boolean() {
-                    return Err("override: cover needs bool".into());
+                    return Err("cover needs bool".into());
                 }
             } else if nested && v.is_object() {
                 cover(&v, rules, false)?
             } else {
-                return Err(format!("override: unknown cover key {k}"));
+                return Err(format!("unknown cover key {k}"));
             }
         }
         Ok(())
@@ -237,14 +266,205 @@ fn validate(b: &V, rules: &V) -> Result<(), String> {
     }
     for name in obj(&b["converters"]).keys() {
         if !CONVERTERS.contains(&name.as_str()) {
-            return Err(format!("override: unknown converter {name}"));
+            return Err(format!("unknown converter {name}"));
         }
+    }
+    if let Some(config) = b["converters"].get("declarative") {
+        validate_converter(config, complete)?;
     }
     if b.get("delta").is_some() {
         unknown(&b["delta"], &["accept_passive"])?;
         if b["delta"].get("accept_passive").is_some() && !b["delta"]["accept_passive"].is_boolean()
         {
-            return Err("override: delta needs bool".into());
+            return Err("delta needs bool".into());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_mapping(mapping: &V, rules: &V) -> Result<(), String> {
+    if !mapping.is_object() {
+        return Err("overrides must be object".into());
+    }
+    for (name, block) in fields(mapping) {
+        if !block.is_object() {
+            return Err(format!("{name}: override block must be object"));
+        }
+        validate(block, rules, false).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(())
+}
+
+fn validate_property(p: &V, definition: bool, converter: bool) -> Result<(), String> {
+    for key in ["label", "class", "category", "unit", "series", "role"] {
+        if p.get(key).is_some() && !p[key].is_null() && !p[key].is_string() {
+            return Err(format!("property {key}: needs string or null"));
+        }
+    }
+    if !p["category"].is_null() && !["diagnostic", "config"].contains(&s(&p["category"])) {
+        return Err("invalid category".into());
+    }
+    if !p["series"].is_null() && !["counter", "gauge"].contains(&s(&p["series"])) {
+        return Err("invalid series".into());
+    }
+    if p.get("rw").is_some() && !p["rw"].is_boolean() {
+        return Err("rw needs bool".into());
+    }
+    if definition {
+        if (converter || p.get("type").is_some())
+            && !["binary", "number", "select", "text", "trigger", "event"].contains(&s(&p["type"]))
+        {
+            return Err("invalid property type".into());
+        }
+        for key in ["min", "max", "step"] {
+            if p.get(key).is_some() && !p[key].is_number() {
+                return Err(format!("{key} needs number"));
+            }
+        }
+        if p.get("step").is_some() && n(&p["step"]) <= 0.0 {
+            return Err("step must be positive".into());
+        }
+        if p.get("min").is_some() && p.get("max").is_some() && n(&p["min"]) > n(&p["max"]) {
+            return Err("min exceeds max".into());
+        }
+        if let Some(options) = p.get("options") {
+            if !options.is_array() || items(options).iter().any(|v| !v.is_string()) {
+                return Err("options need array of strings".into());
+            }
+            if items(options)
+                .iter()
+                .enumerate()
+                .any(|(i, v)| items(options)[..i].contains(v))
+            {
+                return Err("duplicate options".into());
+            }
+        }
+        if converter && ["select", "event"].contains(&s(&p["type"])) && p.get("options").is_none() {
+            return Err("select/event needs options".into());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn value_fits(value: &V, definition: &V) -> bool {
+    match s(&definition["type"]) {
+        "binary" => value.is_boolean(),
+        "number" => value.is_number(),
+        "text" => value.is_string(),
+        "select" => items(&definition["options"]).contains(value),
+        _ => false,
+    }
+}
+
+fn validate_converter(config: &V, complete: bool) -> Result<(), String> {
+    if !config.is_object()
+        || (config.get("props").is_some() || complete) && !config["props"].is_object()
+    {
+        return Err("declarative converter and props must be objects".into());
+    }
+    if config.get("write").is_some() && !config["write"].is_object() {
+        return Err("write must be object".into());
+    }
+    for (name, definition) in fields(&config["props"]) {
+        if name.is_empty() || name == "available" || !definition.is_object() {
+            return Err("invalid converter property".into());
+        }
+        unknown(
+            definition,
+            &[
+                "type", "label", "class", "category", "unit", "series", "rw", "role", "min", "max",
+                "step", "options", "requires", "group", "src",
+            ],
+        )?;
+        validate_property(definition, true, complete)?;
+        if complete
+            && (truth(&definition["rw"]) || definition["type"] == "trigger")
+            && config["write"].get(name).is_none()
+        {
+            return Err("writable declarative property needs write program".into());
+        }
+    }
+    for method in ["update", "timer", "reset"] {
+        if let Some(program) = config.get(method) {
+            validate_program(program, &config["props"], 0, complete, method != "reset")?;
+        }
+    }
+    for (prop, program) in fields(&config["write"]) {
+        if complete && config["props"].get(prop).is_none() {
+            return Err(format!("write: unknown property {prop}"));
+        }
+        validate_program(program, &config["props"], 0, complete, true)?;
+    }
+    Ok(())
+}
+
+fn validate_program(
+    program: &V,
+    props: &V,
+    depth: usize,
+    complete: bool,
+    effects: bool,
+) -> Result<(), String> {
+    if depth >= 64 {
+        return Err("rule nesting limit exceeded".into());
+    }
+    if !program.is_array() {
+        return Err("rule program must be an array".into());
+    }
+    for stmt in items(program) {
+        if !stmt.is_object() {
+            return Err("statement must be object".into());
+        }
+        if !effects
+            && ["emit", "timer", "send"]
+                .iter()
+                .any(|key| stmt.get(key).is_some())
+        {
+            return Err("reset programs can only assign state".into());
+        }
+        if stmt.get("if").is_some() {
+            unknown(stmt, &["if", "then", "else"])?;
+            for branch in ["then", "else"] {
+                if let Some(program) = stmt.get(branch) {
+                    validate_program(program, props, depth + 1, complete, effects)?;
+                }
+            }
+        } else if let Some(path) = stmt.get("set") {
+            unknown(stmt, &["set", "value"])?;
+            let parts = crate::expr::target(path);
+            if parts.first().is_none_or(|p| p != "state") {
+                return Err("rules can assign only state slots".into());
+            }
+        } else if let Some(prop) = stmt.get("emit") {
+            unknown(stmt, &["emit", "value"])?;
+            if prop.as_str().is_none_or(str::is_empty) || complete && props.get(s(prop)).is_none() {
+                return Err("emit: unknown property".into());
+            }
+        } else if let Some(name) = stmt.get("timer") {
+            unknown(stmt, &["timer", "after"])?;
+            if name.as_str().is_none_or(str::is_empty) {
+                return Err("timer needs name".into());
+            }
+            if let Some(after) = stmt.get("after")
+                && !after.is_object()
+                && !after.is_null()
+                && (!after.is_number() || n(after) < 0.0)
+            {
+                return Err("invalid timer delay".into());
+            }
+        } else if let Some(send) = stmt.get("send") {
+            unknown(stmt, &["send"])?;
+            unknown(send, &["code", "value"])?;
+            if !send.is_object() || send.get("code").is_none() || send.get("value").is_none() {
+                return Err("send needs code and value".into());
+            }
+        } else if let Some(name) = stmt.get("let") {
+            unknown(stmt, &["let", "value"])?;
+            if name.as_str().is_none_or(str::is_empty) {
+                return Err("let needs name".into());
+            }
+        } else {
+            return Err("unknown rule statement".into());
         }
     }
     Ok(())
@@ -258,14 +478,14 @@ pub(super) fn patch_descriptor(
 ) -> Result<(), String> {
     for (prop, p) in obj(&block["props"]) {
         if prop == "available" {
-            return Err("override: props.available cannot be overridden".into());
+            return Err("props.available cannot be overridden".into());
         }
         if p.get("src").is_some() {
             let code = s(&p["src"]);
             let e = device["status_range"]
                 .get(code)
                 .or_else(|| device["function"].get(code))
-                .ok_or_else(|| format!("override: props.{prop}.src: no dp {code}"))?;
+                .ok_or_else(|| format!("props.{prop}.src: no dp {code}"))?;
             let kind = normalized(s(&e["type"]));
             let natural = match kind {
                 "Boolean" => "binary",
@@ -275,16 +495,16 @@ pub(super) fn patch_descriptor(
             };
             let ty = p.get("type").map(s).unwrap_or(natural);
             if ty != "trigger" && ty != "text" && ty != natural {
-                return Err("override: property type does not fit dp".into());
+                return Err("property type does not fit dp".into());
             }
             let writable = device["function"].get(code).is_some();
             let rw = ty != "trigger" && ty != "text" && p.get("rw").map(truth).unwrap_or(writable);
             if (rw || ty == "trigger") && !writable {
-                return Err("override: dp is not writable".into());
+                return Err("dp is not writable".into());
             }
             let role = Role {
                 code: code.into(),
-                kind: kind.into(),
+                kind: DpKind::parse(kind).ok_or("invalid dp kind")?,
                 spec: parse(&e["values"]),
                 report_type: V::Null,
             };
@@ -331,7 +551,7 @@ pub(super) fn patch_descriptor(
                 update_all: false,
                 config: json!({}),
             });
-            a.descriptor["props"][&prop] = def;
+            Arc::make_mut(&mut a.descriptor)["props"][&prop] = def;
             let trigger = ty == "trigger";
             a.bindings.insert(
                 prop,
@@ -347,11 +567,14 @@ pub(super) fn patch_descriptor(
             );
             continue;
         }
-        let Some(def) = a.descriptor["props"].get_mut(&prop) else {
-            return Err(format!("override: props.{prop}: no such property"));
+        let Some(def) = Arc::make_mut(&mut a.descriptor)["props"].get_mut(&prop) else {
+            return Err(format!("props.{prop}: no such property"));
         };
         if truth(&p["hide"]) {
-            a.descriptor["props"].as_object_mut().unwrap().remove(&prop);
+            Arc::make_mut(&mut a.descriptor)["props"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&prop);
             a.bindings.shift_remove(&prop);
             continue;
         }
@@ -360,7 +583,7 @@ pub(super) fn patch_descriptor(
                 if v.is_null() {
                     def.as_object_mut().unwrap().remove(k);
                 } else if (k == "unit" || k == "series") && def["type"] != "number" {
-                    return Err(format!("override: {k} only applies to number"));
+                    return Err(format!("{k} only applies to number"));
                 } else {
                     def[k] = v.clone();
                 }
@@ -368,7 +591,7 @@ pub(super) fn patch_descriptor(
         }
         if p["rw"] == false {
             if def["type"] == "trigger" || def["type"] == "event" {
-                return Err("override: trigger/event cannot be made read only".into());
+                return Err("trigger/event cannot be made read only".into());
             }
             def.as_object_mut().unwrap().remove("rw");
             if items(&rules["rw_roles"]).contains(&def["role"]) {
@@ -381,19 +604,28 @@ pub(super) fn patch_descriptor(
     }
     for (k, v) in obj(&block["device"]) {
         if v.is_null() {
-            a.descriptor.as_object_mut().unwrap().remove(&k);
+            Arc::make_mut(&mut a.descriptor)
+                .as_object_mut()
+                .unwrap()
+                .remove(&k);
         } else {
-            a.descriptor[&k] = v;
+            Arc::make_mut(&mut a.descriptor)[&k] = v;
         }
     }
     let used: Vec<_> = obj(&a.descriptor["props"])
         .values()
         .map(|d| d["group"].clone())
         .collect();
-    if let Some(groups) = a.descriptor.get_mut("groups").and_then(V::as_object_mut) {
+    if let Some(groups) = Arc::make_mut(&mut a.descriptor)
+        .get_mut("groups")
+        .and_then(V::as_object_mut)
+    {
         groups.retain(|k, _| used.contains(&json!(k)));
         if groups.is_empty() {
-            a.descriptor.as_object_mut().unwrap().remove("groups");
+            Arc::make_mut(&mut a.descriptor)
+                .as_object_mut()
+                .unwrap()
+                .remove("groups");
         }
     }
     Ok(())

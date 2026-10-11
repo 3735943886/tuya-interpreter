@@ -9,7 +9,7 @@ license = "MIT"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 indexmap = { version = "2", features = ["serde"] }

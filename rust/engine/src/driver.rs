@@ -1,27 +1,28 @@
+use crate::DpKind;
+use crate::StateSource;
 use crate::entity;
-use crate::machine::Machine;
+use crate::machine::{Machine, MachineEffects, Method};
+use crate::protocol::SlotKind;
+use crate::{Channel, EngineError, Input, Output, RejectCode, SendChannel};
 use crate::{adapter::*, assembly::*, data::*, plan::Plan};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
+use std::sync::Arc;
 mod check;
 mod cover;
-mod overrides;
+pub(crate) mod overrides;
 pub use check::check;
 use cover::{Cover, Motion, make_covers, own};
 use overrides::{patch_descriptor, prepare};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Driver {
-    pub device: V,
-    pub block: V,
-    pub plans: Vec<Plan>,
+    #[serde(flatten)]
+    pub config: Arc<DriverConfig>,
     pub assembly: Assembly,
-    pub adapter: Adapter,
     pub covers: Vec<Cover>,
     pub motions: Vec<Motion>,
     pub delta: Option<V>,
-    pub switches: IndexMap<String, (i64, String)>,
-    pub own_blocks: Vec<V>,
     pub timers: Vec<String>,
     pub codes: V,
     pub dps: V,
@@ -31,18 +32,80 @@ pub struct Driver {
     pub synced: bool,
     pub seq: i64,
     pub machines: Vec<Machine>,
-    /// The registered rule pack the driver was made with (empty for inline rules).
     #[serde(default)]
     pub rules_id: String,
-    /// Ordered rule content identity; driver state is specific to this pack.
     pub rules_fingerprint: String,
 }
+
+/// Immutable interpretation shared by in-memory transactions.
+#[derive(Serialize, Deserialize)]
+pub struct DriverConfig {
+    pub device: V,
+    pub block: V,
+    pub plans: Vec<Plan>,
+    pub adapter: Adapter,
+    pub switches: IndexMap<String, (i64, String)>,
+    pub own_blocks: Vec<V>,
+}
+
 impl Driver {
-    pub fn new(device: &V, options: &V, rules: &V) -> Result<Self, String> {
+    pub(crate) fn validate_state(&self) -> Result<(), EngineError> {
+        let valid = [
+            &self.codes,
+            &self.dps,
+            &self.values,
+            self.assembly.descriptor.as_ref(),
+        ]
+        .iter()
+        .all(|v| v.is_object())
+            && self.assembly.descriptor["props"].is_object()
+            && self.config.own_blocks.len() == 2
+            && self.delta.as_ref().is_none_or(V::is_object)
+            && self
+                .assembly
+                .bindings
+                .values()
+                .all(|binding| match binding.source {
+                    Source::Layout { plan, .. } | Source::Dp { plan, .. } => {
+                        plan < self.config.plans.len()
+                    }
+                    Source::Machine { index } => index < self.machines.len(),
+                    Source::Motion => true,
+                })
+            && self.config.switches.values().all(|(index, _)| {
+                if *index == -1 {
+                    self.delta.is_some()
+                } else {
+                    *index >= 0 && (*index as usize) < self.covers.len()
+                }
+            })
+            && self
+                .covers
+                .iter()
+                .all(|cover| cover.plan < self.config.plans.len() && cover.settings.is_object());
+        if valid {
+            Ok(())
+        } else {
+            Err(EngineError::InvalidInput("invalid driver state".into()))
+        }
+    }
+    pub fn new(device: &V, options: &V, rules: &V) -> Result<Self, EngineError> {
         if rules["version"] != 1 {
             return Err("unsupported rule version".into());
         }
-        let (d, block, dpmap, info) = prepare(device, options, rules)?;
+        if device["id"].as_str().is_none() {
+            return Err(EngineError::InvalidDevice("device needs id".into()));
+        }
+        if let Some(dpmap) = options.get("dpmap")
+            && (!dpmap.is_object()
+                || fields(dpmap).any(|(_, code)| code.as_str().is_none_or(str::is_empty)))
+        {
+            return Err(EngineError::InvalidInput(
+                "dpmap must be an object of nonempty codes".into(),
+            ));
+        }
+        let (d, block, dpmap, info) =
+            prepare(device, options, rules).map_err(EngineError::InvalidOverride)?;
         let mut adapter = Adapter::new(&d, &dpmap, rules);
         for (id, patch) in obj(&block["dp"]) {
             let code = s(&patch["code"]).to_string();
@@ -131,7 +194,7 @@ impl Driver {
                 && c.applies("invert_control")
                 && let Some(r) = &c.ins
             {
-                if r.kind == "Boolean" {
+                if r.kind == DpKind::Boolean {
                     adapter.invert(&r.code, &d);
                 } else {
                     let words = cover_words(r, &c.words, rules);
@@ -170,9 +233,9 @@ impl Driver {
                     .iter()
                     .any(|c| c.group.as_deref() == Some(k.as_str()))
             {
-                return Err(format!(
-                    "override: cover.{k}: the device has no cover in a group of that name"
-                ));
+                return Err(EngineError::InvalidOverride(format!(
+                    "cover.{k}: the device has no cover in a group of that name"
+                )));
             }
         }
         let mut taken = vec![];
@@ -181,22 +244,24 @@ impl Driver {
             let index = machines.len();
             for (prop, def) in obj(&cfg["props"]) {
                 if prop == "available" || taken.contains(&prop) {
-                    return Err("override: converter property taken".into());
+                    return Err(EngineError::InvalidOverride(
+                        "converter property taken".into(),
+                    ));
                 }
                 taken.push(prop.clone());
-                assembly.descriptor["props"][&prop] = def.clone();
+                Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def.clone();
                 let writable = truth(&def["rw"]) || def["type"] == "trigger";
                 if writable && cfg["write"].get(&prop).is_none() {
-                    return Err(
-                        "override: writable declarative property needs write program".into(),
-                    );
+                    return Err(EngineError::InvalidOverride(
+                        "writable declarative property needs write program".into(),
+                    ));
                 }
                 assembly
                     .bindings
                     .insert(prop, Binding::new(Source::Machine { index }, writable));
             }
             machines.push(Machine {
-                config: cfg.clone(),
+                config: Arc::new(cfg.clone()),
                 state: cfg.get("initial_state").cloned().unwrap_or(json!({})),
             });
         }
@@ -208,10 +273,9 @@ impl Driver {
                 continue;
             }
             let Some(source) = c.source().filter(|source| match *source {
-                "control" => c.ins.is_some(),
-                "inferred" => c.can_infer(),
-                "none" => c.cur.is_some(),
-                _ => false,
+                StateSource::Control => c.ins.is_some(),
+                StateSource::Inferred => c.can_infer(),
+                StateSource::None => c.cur.is_some(),
             }) else {
                 continue;
             };
@@ -232,7 +296,7 @@ impl Driver {
                 position: c.cur.as_ref().map(|r| r.code.clone()),
                 words,
                 settle: n(&c.settings["settle"]),
-                mode: source.into(),
+                mode: source,
                 invert_report: truth(&c.settings["invert_reported_motion"]),
                 ..Motion::default()
             });
@@ -242,7 +306,7 @@ impl Driver {
             if let Some(g) = &motion.group {
                 def["group"] = json!(g);
             }
-            assembly.descriptor["props"][&motion.prop] = def;
+            Arc::make_mut(&mut assembly.descriptor)["props"][&motion.prop] = def;
             assembly
                 .bindings
                 .insert(motion.prop.clone(), Binding::new(Source::Motion, false));
@@ -250,7 +314,7 @@ impl Driver {
         let delta = if assembly.bindings.values().any(|b| {
             b.plan()
                 .and_then(|i| plans.get(i))
-                .is_some_and(|p| p.slot_kind.as_deref() == Some("delta"))
+                .is_some_and(|p| p.slot_kind == Some(SlotKind::Delta))
         }) {
             let mut cfg = json!({"accept_passive":false});
             merge(&mut cfg, &block["delta"]);
@@ -287,7 +351,7 @@ impl Driver {
                     if let Some(g) = &c.group {
                         def["group"] = json!(g);
                     }
-                    assembly.descriptor["props"][&prop] = def;
+                    Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def;
                     c.switches.push(k.clone());
                     switches.insert(prop, (i as i64, k));
                 }
@@ -295,28 +359,31 @@ impl Driver {
             if delta.is_some() {
                 let prop = "delta_accept_passive";
                 if assembly.descriptor["props"].get(prop).is_none() {
-                    assembly.descriptor["props"][prop] = json!({"type":"binary","rw":true,"category":"config","label":"Count passive reports"});
+                    Arc::make_mut(&mut assembly.descriptor)["props"][prop] = json!({"type":"binary","rw":true,"category":"config","label":"Count passive reports"});
                     switches.insert(prop.into(), (-1, "accept_passive".into()));
                 }
             }
         }
-        patch_descriptor(&mut assembly, &mut plans, &block, &selected, rules)?;
+        patch_descriptor(&mut assembly, &mut plans, &block, &selected, rules)
+            .map_err(EngineError::InvalidOverride)?;
         switches.retain(|k, _| assembly.descriptor["props"].get(k).is_some());
         let own_blocks = [s(&device["product_id"]), s(&device["id"])]
             .iter()
             .map(|k| options["overrides"][*k].clone())
             .collect();
         Ok(Self {
-            device: d,
-            block,
-            plans,
+            config: Arc::new(DriverConfig {
+                device: d,
+                block,
+                plans,
+                adapter,
+                switches,
+                own_blocks,
+            }),
             assembly,
-            adapter,
             covers,
             motions,
             delta,
-            switches,
-            own_blocks,
             timers: vec![],
             codes: json!({}),
             dps: json!({}),
@@ -333,14 +400,13 @@ impl Driver {
     /// Take over what `old` counted: delta totals of the same DPs, and the message sequence.
     pub fn carry(&mut self, old: &Driver) {
         self.seq = self.seq.max(old.seq);
-        let is_delta =
-            |p: Option<&Plan>| p.is_some_and(|p| p.slot_kind.as_deref() == Some("delta"));
+        let is_delta = |p: Option<&Plan>| p.is_some_and(|p| p.slot_kind == Some(SlotKind::Delta));
         for (name, b) in self.assembly.bindings.iter_mut() {
             let Some(ob) = old.assembly.bindings.get(name) else {
                 continue;
             };
-            let a = b.plan().and_then(|i| self.plans.get(i));
-            let o = ob.plan().and_then(|i| old.plans.get(i));
+            let a = b.plan().and_then(|i| self.config.plans.get(i));
+            let o = ob.plan().and_then(|i| old.config.plans.get(i));
             if is_delta(a) && is_delta(o) && a.map(|p| &p.depends_on) == o.map(|p| &p.depends_on) {
                 b.total = ob.total;
                 b.last_ts = ob.last_ts.clone();
@@ -348,28 +414,37 @@ impl Driver {
         }
     }
 
-    pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<V>) {
+    pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<Output>) {
         if value.is_null() {
             if self.values.as_object_mut().unwrap().remove(prop).is_some() {
-                out.push(json!({"type":"absent","prop":prop}));
+                out.push(Output::Absent { prop: prop.into() });
             }
         } else if self.values.get(prop).is_none_or(|v| !eq(v, &value)) {
             self.values[prop] = value.clone();
-            out.push(json!({"type":"value","prop":prop,"value":value}));
+            out.push(Output::Value {
+                prop: prop.into(),
+                value,
+            });
         }
     }
-    pub fn describe(&mut self) -> Vec<V> {
+    pub fn describe(&mut self) -> Vec<Output> {
         if self.described {
             return vec![];
         }
         self.described = true;
-        let mut out = vec![json!({"type":"descriptor","desc":self.assembly.descriptor})];
+        let mut out = vec![Output::Descriptor {
+            desc: self.assembly.descriptor.as_ref().clone(),
+        }];
         for m in &self.motions {
-            if m.mode != "inferred" && self.assembly.descriptor["props"].get(&m.prop).is_some() {
-                out.push(json!({"type":"absent","prop":m.prop}));
+            if m.mode != StateSource::Inferred
+                && self.assembly.descriptor["props"].get(&m.prop).is_some()
+            {
+                out.push(Output::Absent {
+                    prop: m.prop.clone(),
+                });
             }
         }
-        for (prop, (idx, key)) in self.switches.clone() {
+        for (prop, (idx, key)) in self.config.switches.clone() {
             let v = if idx < 0 {
                 self.delta.as_ref().unwrap()[&key].clone()
             } else {
@@ -383,8 +458,8 @@ impl Driver {
         let mut out = json!({});
         for c in &self.covers {
             let mut base = c.defaults.clone();
-            merge(&mut base, &own(&self.own_blocks[0], &c.group));
-            let had = own(&self.own_blocks[1], &c.group);
+            merge(&mut base, &own(&self.config.own_blocks[0], &c.group));
+            let had = own(&self.config.own_blocks[1], &c.group);
             let mut vals = json!({});
             for (k, v) in obj(&c.settings) {
                 if v != base[&k] || had.get(&k).is_some() {
@@ -404,10 +479,10 @@ impl Driver {
         }
         if let Some(delta) = &self.delta {
             let mut base = json!({"accept_passive":false});
-            merge(&mut base, &self.own_blocks[0]["delta"]);
+            merge(&mut base, &self.config.own_blocks[0]["delta"]);
             let mut vals = json!({});
             for (k, v) in obj(delta) {
-                if base[&k] != v || self.own_blocks[1]["delta"].get(&k).is_some() {
+                if base[&k] != v || self.config.own_blocks[1]["delta"].get(&k).is_some() {
                     vals[&k] = v;
                 }
             }
@@ -417,65 +492,108 @@ impl Driver {
         }
         out
     }
-    pub fn converted(&mut self, idx: usize, result: &V, out: &mut Vec<V>) {
-        for (prop, v) in obj(&result["values"]) {
-            if self
-                .assembly
-                .bindings
-                .get(&prop)
-                .is_some_and(|b| b.plan().is_none())
-            {
-                self.set(&prop, v, out);
+    fn apply_effects(
+        &mut self,
+        idx: usize,
+        effects: MachineEffects,
+        out: &mut Vec<Output>,
+    ) -> Result<(), EngineError> {
+        // Validate the entire send before publishing values or scheduling timers.
+        let prepared = if effects.commands.is_empty() {
+            None
+        } else {
+            if !self.linked {
+                return Err(EngineError::Unsupported("device link is down".into()));
+            }
+            Some(self.config.adapter.write(&effects.commands)?)
+        };
+        for (prop, value) in effects.values {
+            let owned =
+                self.assembly
+                    .bindings
+                    .get(&prop)
+                    .is_some_and(|binding| match binding.source {
+                        Source::Machine { index } => index == idx,
+                        Source::Motion => idx >= self.machines.len(),
+                        _ => false,
+                    });
+            if owned {
+                self.set(&prop, value, out);
             }
         }
-        for (name, after) in obj(&result["timers"]) {
+        for (name, after) in effects.timers {
             let full = format!("c{idx}:{name}");
-            if after.is_null() {
-                if self.timers.contains(&full) {
-                    self.timers.retain(|n| *n != full);
-                    out.push(json!({"type":"cancel_timer","name":full}));
-                }
-            } else {
+            if let Some(after) = after {
                 if !self.timers.contains(&full) {
                     self.timers.push(full.clone());
                 }
-                out.push(json!({"type":"set_timer","name":full,"after":after}));
+                out.push(Output::SetTimer { name: full, after });
+            } else if self.timers.contains(&full) {
+                self.timers.retain(|n| *n != full);
+                out.push(Output::CancelTimer { name: full });
             }
         }
+        if let Some(dps) = prepared {
+            out.push(send(dps));
+        }
+        Ok(())
     }
-    pub fn handle(&mut self, now: f64, input: &V, rules: &V) -> Result<Vec<V>, String> {
+    pub fn handle(
+        &mut self,
+        now: f64,
+        input: &Input,
+        rules: &V,
+    ) -> Result<Vec<Output>, EngineError> {
+        self.handle_inner(now, input, rules, 0)
+    }
+
+    fn handle_inner(
+        &mut self,
+        now: f64,
+        input: &Input,
+        rules: &V,
+        depth: usize,
+    ) -> Result<Vec<Output>, EngineError> {
+        if depth >= 64 {
+            return Err(EngineError::InvalidInput(
+                "input nesting limit exceeded".into(),
+            ));
+        }
         let mut out = vec![];
-        match s(&input["type"]) {
-            "connected" => {
+        match input {
+            Input::Connected => {
                 self.linked = true;
                 out = self.describe();
             }
-            "describe" => {
+            Input::Describe { seed } => {
                 out = self.describe();
-                for seed in items(&input["seed"]) {
-                    out.extend(self.handle(now, seed, rules)?);
+                for seed in seed {
+                    out.extend(self.handle_inner(now, seed, rules, depth + 1)?);
                 }
                 if !self.synced {
                     self.set("available", json!(false), &mut out);
                 }
             }
-            "disconnected" => {
+            Input::Disconnected => {
                 self.linked = false;
                 self.synced = false;
                 self.codes = json!({});
                 self.dps = json!({});
                 let old = std::mem::replace(&mut self.values, json!({}));
                 for (prop, v) in obj(&old) {
-                    if self.switches.contains_key(&prop) {
+                    if self.config.switches.contains_key(&prop) {
                         self.values[&prop] = v;
                     } else if prop != "available" {
-                        out.push(json!({"type":"absent","prop":prop}));
+                        out.push(Output::Absent { prop });
                     }
                 }
                 self.values["available"] = json!(false);
-                out.push(json!({"type":"value","prop":"available","value":false}));
+                out.push(Output::Value {
+                    prop: "available".into(),
+                    value: json!(false),
+                });
                 for machine in &mut self.machines {
-                    machine.invoke("reset", &json!({}))?;
+                    machine.invoke(Method::Reset, &json!({}))?;
                 }
                 for m in &mut self.motions {
                     m.reset();
@@ -483,20 +601,20 @@ impl Driver {
                 let mut timers = std::mem::take(&mut self.timers);
                 timers.sort();
                 for name in timers {
-                    out.push(json!({"type":"cancel_timer","name":name}));
+                    out.push(Output::CancelTimer { name });
                 }
             }
-            "message" => {
+            Input::Message { channel, json } => {
                 out = self.describe();
-                let mut dps = input["json"].clone();
+                let mut dps = json.clone();
                 if !dps.is_object() {
                     dps = json!({});
                 }
                 let t = dps.as_object_mut().unwrap().remove("t").unwrap_or(V::Null);
                 if truth(&dps) {
                     merge(&mut self.dps, &dps);
-                    let new = self.adapter.read(&dps, rules);
-                    let pushed = input["channel"] == "active";
+                    let new = self.config.adapter.read(&dps, rules);
+                    let pushed = *channel == Channel::Active;
                     let moved: Vec<_> = obj(&new)
                         .iter()
                         .filter(|(c, v)| self.codes.get(*c).is_none_or(|old| !eq(old, v)))
@@ -505,7 +623,7 @@ impl Driver {
                     let first = !self.synced;
                     let (active, changed) = if pushed || first {
                         (pushed, obj(&new).keys().cloned().collect::<Vec<_>>())
-                    } else if input["channel"] == "passive" {
+                    } else if *channel == Channel::Passive {
                         (!moved.is_empty(), moved)
                     } else {
                         (false, moved)
@@ -523,84 +641,78 @@ impl Driver {
                         self.set("available", json!(true), &mut out);
                     }
                     for idx in 0..self.machines.len() {
-                        let result=self.machines[idx].invoke("update",&json!({"now":now,"codes":self.codes,"changed":changed,"active":active}))?;
-                        self.converted(idx, &result, &mut out);
+                        let result=self.machines[idx].invoke(Method::Update,&json!({"now":now,"codes":self.codes,"changed":changed,"active":active}))?;
+                        self.apply_effects(idx, result, &mut out)?;
                     }
                     for idx in 0..self.motions.len() {
                         let (vals, timer) =
                             self.motions[idx].update(&self.codes, &changed, active, false);
-                        let timers = if let Some(t) = timer {
-                            json!({"settle":t})
-                        } else {
-                            json!({})
+                        let effects = MachineEffects {
+                            values: vals.as_object().cloned().unwrap_or_default(),
+                            timers: timer
+                                .map(|t| [("settle".into(), t)].into_iter().collect())
+                                .unwrap_or_default(),
+                            ..MachineEffects::default()
                         };
-                        self.converted(
-                            self.machines.len() + idx,
-                            &json!({"values":vals,"timers":timers}),
-                            &mut out,
-                        );
+                        self.apply_effects(self.machines.len() + idx, effects, &mut out)?;
                     }
                     let counted = pushed
-                        || (input["channel"] == "passive"
+                        || (*channel == Channel::Passive
                             && self
                                 .delta
                                 .as_ref()
                                 .is_some_and(|d| truth(&d["accept_passive"])));
                     let keys: Vec<_> = self.assembly.bindings.keys().cloned().collect();
+                    let mut reads = ReadCache::default();
                     for name in keys {
                         let b = self.assembly.bindings.get_mut(&name).unwrap();
-                        let Some(p) = b.plan().and_then(|i| self.plans.get(i)) else {
+                        let Some(p) = b.plan().and_then(|i| self.config.plans.get(i)) else {
                             continue;
                         };
-                        if p.slot_kind.as_deref() == Some("event") {
-                            if pushed && p.depends_on.first().is_some_and(|c| changed.contains(c)) {
-                                let ev = p.read(&self.codes, 0.0, rules)?["event"].clone();
-                                if truth(&ev)
-                                    && items(&self.assembly.descriptor["props"][&name]["options"])
-                                        .contains(&ev[0])
-                                {
-                                    out.push(json!({"type":"event","prop":name,"kind":ev[0]}));
-                                }
+                        if p.slot_kind == Some(SlotKind::Event) {
+                            if pushed
+                                && let Some(event) = p.event(&self.codes, &changed, rules)?
+                                && items(&self.assembly.descriptor["props"][&name]["options"])
+                                    .contains(&event[0])
+                            {
+                                out.push(Output::Event {
+                                    prop: name,
+                                    kind: s(&event[0]).into(),
+                                });
                             }
                             continue;
                         }
-                        if !b.readable(&self.plans, rules) {
+                        if !b.readable(&self.config.plans, rules) {
                             continue;
                         }
-                        let mut update = first
-                            || p.update_all
-                            || p.depends_on.iter().any(|c| changed.contains(c));
-                        if p.slot_kind.as_deref() == Some("delta") {
-                            let code = &p.depends_on[0];
-                            let raw = &self.codes[code];
-                            let added = counted
-                                && new.get(code).is_some()
-                                && ts != b.last_ts
-                                && !raw.is_null();
-                            if added {
-                                let v = raw
-                                    .as_f64()
-                                    .or_else(|| s(raw).parse().ok())
-                                    .unwrap_or(n(raw));
-                                b.total += v;
-                                b.last_ts = ts.clone();
-                            }
+                        let mut update = first || p.affected(&changed);
+                        if p.slot_kind == Some(SlotKind::Delta) {
+                            let added = p.depends_on.first().is_some_and(|code| {
+                                crate::plan::accumulate(
+                                    &mut b.total,
+                                    &mut b.last_ts,
+                                    &self.codes[code],
+                                    &ts,
+                                    counted && new.get(code).is_some(),
+                                )
+                            });
                             update = added || first;
                         }
                         if update {
                             let v = b.read(
-                                &self.plans,
+                                &self.config.plans,
                                 &self.codes,
                                 rules,
                                 &self.assembly.descriptor["props"][&name],
+                                &mut reads,
                             )?;
                             self.set(&name, v, &mut out);
                         }
                     }
                 }
             }
-            "timer" => {
-                let name = s(&input["name"]);
+            Input::Timer { name } => {
+                let name = name.as_str();
                 if self.timers.contains(&name.to_string()) {
                     self.timers.retain(|n| n != name);
                     if let Some((head, short)) = name.split_once(':')
@@ -609,99 +721,113 @@ impl Driver {
                     {
                         if idx < self.machines.len() {
                             let result = self.machines[idx].invoke(
-                                "timer",
+                                Method::Timer,
                                 &json!({"now":now,"name":short,"codes":self.codes}),
                             )?;
-                            self.converted(idx, &result, &mut out);
+                            self.apply_effects(idx, result, &mut out)?;
                         } else if let Some(m) = self.motions.get_mut(idx - self.machines.len())
                             && short == "settle"
                         {
                             let (vals, _) = m.update(&self.codes, &[], false, true);
-                            self.converted(idx, &json!({"values":vals,"timers":{}}), &mut out);
+                            self.apply_effects(
+                                idx,
+                                MachineEffects {
+                                    values: vals.as_object().cloned().unwrap_or_default(),
+                                    ..MachineEffects::default()
+                                },
+                                &mut out,
+                            )?;
                         }
                     }
                 }
             }
-            "command" => {
-                let prop = s(&input["prop"]);
-                match check(
-                    &self.assembly.descriptor,
-                    &self.values,
-                    prop,
-                    &input["value"],
-                ) {
-                    Err((code, reason)) => {
-                        out.push(json!({"type":"reject","prop":prop,"code":code,"reason":reason}))
-                    }
+            Input::Command { prop, value } => {
+                let prop = prop.as_str();
+                match check(&self.assembly.descriptor, &self.values, prop, value) {
+                    Err((code, reason)) => out.push(Output::Reject {
+                        prop: prop.into(),
+                        code,
+                        reason,
+                    }),
                     Ok(value) => {
-                        if let Some((idx, key)) = self.switches.get(prop).cloned() {
+                        if let Some((idx, key)) = self.config.switches.get(prop).cloned() {
                             if idx < 0 {
                                 self.delta.as_mut().unwrap()[&key] = value.clone();
                             } else {
                                 self.covers[idx as usize].settings[&key] = value.clone();
                             }
                             self.set(prop, value, &mut out);
-                            out.push(
-                                json!({"type":"settings_changed","block":self.settings_block()}),
-                            );
+                            out.push(Output::SettingsChanged {
+                                block: self.settings_block(),
+                            });
                         } else if let Some(b) = self.assembly.bindings.get(prop) {
                             if !b.writable {
-                                out.push(reject(prop, "unsupported", "no write path"));
+                                out.push(reject(prop, RejectCode::Unsupported, "no write path"));
                             } else if !self.linked {
-                                out.push(reject(prop, "unavailable", "device link is down"));
+                                out.push(reject(
+                                    prop,
+                                    RejectCode::Unavailable,
+                                    "device link is down",
+                                ));
                             } else {
                                 match &b.source {
                                     Source::Machine { index } => {
-                                        let result = self.machines.get_mut(*index).ok_or("invalid machine index")?.invoke("write",&json!({"prop":prop,"value":value,"codes":self.codes,"now":now}))?;
-                                        out.push(
-                                            match self.adapter.write(&arr(&result["commands"])) {
-                                                Ok(dps) => send(dps),
-                                                Err(error) => reject(prop, "unsupported", &error),
-                                            },
-                                        );
+                                        let index = *index;
+                                        let old_state = self.machines[index].state.clone();
+                                        let result = self.machines[index].invoke(Method::Write, &json!({"prop":prop,"value":value,"codes":self.codes,"now":now}))?;
+                                        if let Err(error) =
+                                            self.apply_effects(index, result, &mut out)
+                                        {
+                                            self.machines[index].state = old_state;
+                                            out.push(reject(
+                                                prop,
+                                                error.reject_code(),
+                                                &error.to_string(),
+                                            ));
+                                        }
                                     }
                                     _ => {
                                         let definition = &self.assembly.descriptor["props"][prop];
                                         out.push(
                                             match b
                                                 .write(
-                                                    &self.plans,
+                                                    &self.config.plans,
                                                     &value,
                                                     &self.codes,
                                                     rules,
                                                     definition,
                                                 )
-                                                .and_then(|cmds| self.adapter.write(&cmds))
+                                                .and_then(|cmds| self.config.adapter.write(&cmds))
                                             {
                                                 Ok(dps) => send(dps),
-                                                Err(e) => reject(
-                                                    prop,
-                                                    if e.starts_with("unsupported:") {
-                                                        "unsupported"
-                                                    } else {
-                                                        "invalid_value"
-                                                    },
-                                                    &e,
-                                                ),
+                                                Err(e) => {
+                                                    reject(prop, e.reject_code(), &e.to_string())
+                                                }
                                             },
                                         );
                                     }
                                 }
                             }
                         } else {
-                            out.push(reject(prop, "unsupported", "no write path"));
+                            out.push(reject(prop, RejectCode::Unsupported, "no write path"));
                         }
                     }
                 }
             }
-            _ => {}
         }
         Ok(out)
     }
 }
-fn send(dps: V) -> V {
-    json!({"type":"send_message","channel":"set","json":{"dps":dps}})
+fn send(dps: V) -> Output {
+    Output::SendMessage {
+        channel: SendChannel::Set,
+        json: json!({"dps":dps}),
+    }
 }
-fn reject(prop: &str, code: &str, reason: &str) -> V {
-    json!({"type":"reject","prop":prop,"code":code,"reason":reason})
+fn reject(prop: &str, code: RejectCode, reason: &str) -> Output {
+    Output::Reject {
+        prop: prop.into(),
+        code,
+        reason: reason.into(),
+    }
 }
