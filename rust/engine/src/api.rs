@@ -1,5 +1,5 @@
 use crate::protocol::SlotKind;
-use crate::runtime::fingerprint;
+use crate::runtime::{fingerprint, validated};
 use crate::{DriverOptions, EngineError, Input, RulePack};
 use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
 use serde::Deserialize;
@@ -8,21 +8,6 @@ use serde_json::{Value as V, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 static PACKS: OnceLock<Mutex<HashMap<String, Arc<RulePack>>>> = OnceLock::new();
-fn ordered_eq(left: &V, right: &V) -> bool {
-    match (left, right) {
-        (V::Object(left), V::Object(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|((lk, lv), (rk, rv))| lk == rk && ordered_eq(lv, rv))
-        }
-        (V::Array(left), V::Array(right)) => {
-            left.len() == right.len() && left.iter().zip(right).all(|(lv, rv)| ordered_eq(lv, rv))
-        }
-        _ => left == right,
-    }
-}
 fn decode<T: DeserializeOwned>(input: &V, field: &str) -> Result<T, EngineError> {
     T::deserialize(&input[field]).map_err(|e| EngineError::InvalidInput(format!("{field}: {e}")))
 }
@@ -90,13 +75,9 @@ impl<'a> Rules<'a> {
                     )
                 });
         }
-        if rules["version"] != 1 {
-            return Err(EngineError::InvalidRules("unsupported rule version".into()));
-        }
-        crate::rules::validate(rules).map_err(EngineError::InvalidRules)?;
         Ok(Rules::Inline {
             rules,
-            fingerprint: fingerprint(rules),
+            fingerprint: validated(rules)?,
         })
     }
     fn rules(&self) -> &V {
@@ -124,25 +105,25 @@ fn install(input: &V) -> Result<V, EngineError> {
         .as_str()
         .filter(|id| !id.is_empty())
         .ok_or_else(|| EngineError::InvalidInput("rules_id must be a nonempty string".into()))?;
+    let conflict =
+        || EngineError::InvalidRules("rule id already registered with different content".into());
     if let Some(old) = registry()?.get(id).cloned() {
-        if !ordered_eq(old.rules(), rules) {
-            return Err(EngineError::InvalidRules(
-                "rule id already registered with different content".into(),
-            ));
-        }
-        return Ok(json!(true));
+        // The fingerprint is the ordered content, so equal fingerprints are the same pack.
+        return if old.fingerprint() == fingerprint(rules) {
+            Ok(json!(true))
+        } else {
+            Err(conflict())
+        };
     }
     // Validation and hashing never hold the global registry lock.
     let pack = Arc::new(RulePack::new(rules.clone())?);
     let mut packs = registry()?;
-    if let Some(old) = packs.get(id) {
-        if !ordered_eq(old.rules(), pack.rules()) {
-            return Err(EngineError::InvalidRules(
-                "rule id already registered with different content".into(),
-            ));
+    match packs.get(id) {
+        Some(old) if old.fingerprint() != pack.fingerprint() => return Err(conflict()),
+        Some(_) => {}
+        None => {
+            packs.insert(id.into(), pack);
         }
-    } else {
-        packs.insert(id.into(), pack);
     }
     Ok(json!(true))
 }
@@ -234,9 +215,6 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
             let options = serde_json::to_value(options)
                 .map_err(|e| EngineError::InvalidInput(e.to_string()))?;
             let mut d = Driver::new(&input["device"], &options, rules)?;
-            if let Rules::Registered(_) = pack {
-                d.rules_id = s(&input["rules_id"]).into();
-            }
             d.rules_fingerprint = pack.fingerprint().into();
             Ok(json!({"driver":d}))
         }

@@ -145,11 +145,12 @@ define which state is cleared on disconnect.
 
 `write`, `update` and `timer` programs all return their declared value, timer and send effects. A write may update
 local state and schedule a timer without sending a DP command. Sends from one invocation are combined into one
-`send_message`; they are validated before values or timers are published. An unsupported write returns `reject`
-and rolls back its converter state. A failed update or timer leaves the whole driver unchanged. Converter values
+`send_message`; they are validated before values or timers are published. A write whose program or effects fail returns
+`reject` and rolls back its converter state. A failed update or timer leaves the whole driver unchanged. Converter values
 must fit their declared property type; select values outside the declared options become absent. Timer delays must
 be finite, nonnegative numbers, or null to cancel. Hidden or replaced properties do not receive converter values.
 `reset` programs accept state assignments and control flow only; disconnect already clears values and cancels timers.
+A `reset` that fails restores the converter's `initial_state`, so a disconnect is never refused.
 
 Override layers may partially refine converter properties or programs. Structural validation runs when rules are
 composed, and property ownership and required write programs are checked after the product and device blocks merge.

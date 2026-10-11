@@ -76,6 +76,21 @@ fn set(root: &mut V, parts: &[String], value: V) {
     *v = value;
 }
 impl Machine {
+    pub fn new(config: &V) -> Self {
+        let config = Arc::new(config.clone());
+        let state = config.get("initial_state").cloned().unwrap_or(json!({}));
+        Self { config, state }
+    }
+    /// Run the `reset` program; if it fails, fall back to the initial state so a disconnect always lands.
+    pub fn reset(&mut self) {
+        if self.invoke(Method::Reset, &json!({})).is_err() {
+            self.state = self
+                .config
+                .get("initial_state")
+                .cloned()
+                .unwrap_or(json!({}));
+        }
+    }
     pub fn invoke(&mut self, method: Method, input: &V) -> Result<MachineEffects, EngineError> {
         let program = match method {
             Method::Write => &self.config["write"][s(&input["prop"])],

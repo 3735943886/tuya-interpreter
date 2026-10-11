@@ -108,12 +108,6 @@ def test_create_rejects_missing_or_incomplete_rules(context):
         _call({'op': 'create', 'device': DEVICE, 'options': {}, **context})
 
 
-def test_inline_rules_do_not_inherit_an_unrelated_registration_id():
-    driver = _call({'op': 'create', 'device': DEVICE, 'options': {},
-                    'rules': rules(), 'rules_id': 'not-registered'})['driver']
-    assert driver['rules_id'] == ''
-
-
 def test_rule_independent_operations_need_no_pack():
     assert _call({'op': 'merge', 'mappings': [{'x': 1}]}) == {'x': 1}
     driver = TuyaDriver(DEVICE, rules=rules())

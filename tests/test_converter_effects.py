@@ -7,6 +7,7 @@ from tuya2ildevice import (
     CancelTimer,
     Command,
     Connected,
+    Disconnected,
     Message,
     OverrideError,
     Reject,
@@ -53,6 +54,24 @@ def test_rejected_send_rolls_back_state_values_and_timers():
     assert d.handle(1, Command('x', 7)) == [Reject('x', 'unsupported', 'unsupported: no dp for missing')]
     assert d.state == before
     assert not d.timers
+
+
+def test_failing_write_program_is_rejected_without_committing_state():
+    d = driver({'props': {'x': {'type': 'number', 'rw': True}}, 'initial_state': {'n': 0},
+                'write': {'x': [{'set': 'state.n', 'value': 1}, {'emit': 'x', 'value': {'op': 'error', 'message': 'boom'}}]}})
+    before = d.state.copy()
+    assert d.handle(1, Command('x', 7)) == [Reject('x', 'invalid_value', 'boom')]
+    assert d.state == before
+
+
+def test_failing_reset_program_still_disconnects_and_restores_initial_state():
+    d = driver({'props': {'x': {'type': 'number'}}, 'initial_state': {'n': 0},
+                'update': [{'set': 'state.n', 'value': 5}],
+                'reset': [{'set': 'state.n', 'value': {'op': 'error', 'message': 'boom'}}]})
+    d.handle(1, Message('active', {'3': 30}))
+    assert Value('available', False) in d.handle(2, Disconnected())
+    assert not d.linked
+    assert d.state['machines'][0]['state'] == {'n': 0}
 
 
 def test_timer_cancellation_and_hidden_properties_still_work():

@@ -13,11 +13,7 @@ pub struct RulePack {
 
 impl RulePack {
     pub fn new(rules: Value) -> Result<Self, EngineError> {
-        if rules["version"] != 1 {
-            return Err(EngineError::InvalidRules("unsupported rule version".into()));
-        }
-        crate::rules::validate(&rules).map_err(EngineError::InvalidRules)?;
-        let fingerprint = fingerprint(&rules);
+        let fingerprint = validated(&rules)?;
         Ok(Self { rules, fingerprint })
     }
     pub fn rules(&self) -> &Value {
@@ -52,6 +48,15 @@ pub fn merge_rules(
         warnings: serde_json::from_value(result["warnings"].take())
             .map_err(|e| EngineError::Evaluation(e.to_string()))?,
     })
+}
+
+/// Validate a rule pack and return its fingerprint, which preserves object declaration order.
+pub(crate) fn validated(rules: &Value) -> Result<String, EngineError> {
+    if rules["version"] != 1 {
+        return Err(EngineError::InvalidRules("unsupported rule version".into()));
+    }
+    crate::rules::validate(rules).map_err(EngineError::InvalidRules)?;
+    Ok(fingerprint(rules))
 }
 
 pub(crate) fn fingerprint(rules: &Value) -> String {

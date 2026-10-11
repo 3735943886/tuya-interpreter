@@ -557,7 +557,7 @@ impl Adapter {
                 .or_insert((s(&code).into(), "default".into(), json!({})));
         }
         for (code, spec) in obj(&device["status_range"]) {
-            if spec["type"] == "Enum" {
+            if normalized(s(&spec["type"])) == "Enum" {
                 a.enum_ranges[code] = parse(&spec["values"])["range"].clone();
             }
         }
@@ -622,6 +622,10 @@ impl Adapter {
             self.remaps[code] = json!({});
         }
         self.remaps[code]["invert"] = json!(!truth(&self.remaps[code]["invert"]));
+        self.set_bounds(code, device);
+    }
+    /// An Integer DP's raw range, which inversion mirrors values within.
+    pub fn set_bounds(&mut self, code: &str, device: &V) {
         let spec = if device["status_range"].get(code).is_some() {
             &device["status_range"][code]
         } else {

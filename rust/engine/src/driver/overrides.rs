@@ -203,16 +203,6 @@ fn validate(b: &V, rules: &V, complete: bool) -> Result<(), String> {
             if (p["type"] == "trigger") != p.get("send").is_some() {
                 return Err("trigger needs send".into());
             }
-        } else {
-            if !p["category"].is_null()
-                && p["category"] != "diagnostic"
-                && p["category"] != "config"
-            {
-                return Err("invalid category".into());
-            }
-            if !p["series"].is_null() && p["series"] != "counter" && p["series"] != "gauge" {
-                return Err("invalid series".into());
-            }
         }
     }
     for (_, r) in obj(&b["remap"]) {

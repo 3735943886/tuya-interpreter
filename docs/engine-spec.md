@@ -1,19 +1,13 @@
 # Tuya DP engine — specification (draft 2)
 
 > The engine is `rust/engine/` driven by the rule pack `rules/00-default.json` (this draft predates the move; its
-> platform builders are now the pack's `entities` specs). "IL" and "tuya2ha" below, and in docs/analysis/, mean this engine's own model,
+> platform builders are now the pack's `entities` specs). "IL" and "tuya2ha" below mean this engine's own model,
 > **not** the ildevice IL (which the top-level package produces from the engine's entity plans).
-
-Changes vs draft 1: incorporates PHASE3_SPEC_REVIEW.md B1-B8, I1-I10, M1-M10
-(role alternatives, complete expression vocabulary, unit policy, climate temperature
-selection, camera, light details, raise-path tagging, layered data, on_update, appendix
-of worked examples).
 
 Goal: a sans-I/O, dependency-free description of *everything* HA core's official `tuya`
 integration (dev @949a484 + tuya-device-handlers 0.0.29) does, so any host can reproduce
 it exactly by interpreting data. Target = exact behavioral reproduction incl. core's own
-quirks (section 12). tuya-device-handlers is a TEST ORACLE only. Evidence: `catalog/A..F`,
-`PHASE2_GAP_ANALYSIS.md` (REQ-*), `PHASE3_SPEC_REVIEW.md`.
+quirks (section 12). tuya-device-handlers is a TEST ORACLE only.
 
 Non-goals: cloud auth/MQ, scenes, camera *stream/image* (entity shape is in scope, B6),
 feeder services (K12), user Python quirks, entity-level `*Quirk.definition_fn` (unused in

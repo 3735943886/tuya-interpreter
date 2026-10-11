@@ -282,12 +282,7 @@ pub(super) fn make_covers(
                 .iter()
                 .find_map(|k| p.role(k))
                 .cloned();
-            let setp = role("target");
-            let choice = cur.is_some()
-                && setp
-                    .as_ref()
-                    .is_some_and(|r| cur.as_ref().is_some_and(|c| c.code != r.code));
-            Cover {
+            let mut cover = Cover {
                 plan: *idx,
                 prefix: pre.clone(),
                 group: group.clone(),
@@ -295,13 +290,15 @@ pub(super) fn make_covers(
                 defaults,
                 settings: cfg,
                 cur,
-                setp,
+                setp: role("target"),
                 ins: role("instruction"),
                 tilt: role("tilt"),
-                position_choice: choice,
+                position_choice: false,
                 switches: vec![],
                 words: spec["words"].clone(),
-            }
+            };
+            cover.position_choice = cover.cur.is_some() && cover.separate();
+            cover
         })
         .collect()
 }

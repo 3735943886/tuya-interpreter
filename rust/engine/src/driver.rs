@@ -32,8 +32,6 @@ pub struct Driver {
     pub synced: bool,
     pub seq: i64,
     pub machines: Vec<Machine>,
-    #[serde(default)]
-    pub rules_id: String,
     pub rules_fingerprint: String,
 }
 
@@ -90,9 +88,6 @@ impl Driver {
         }
     }
     pub fn new(device: &V, options: &V, rules: &V) -> Result<Self, EngineError> {
-        if rules["version"] != 1 {
-            return Err("unsupported rule version".into());
-        }
         if device["id"].as_str().is_none() {
             return Err(EngineError::InvalidDevice("device needs id".into()));
         }
@@ -123,15 +118,7 @@ impl Driver {
         adapter.entries.retain(|_, e| !removed.contains(&e.0));
         for (code, r) in obj(&block["remap"]) {
             adapter.remaps[&code] = r;
-            let e = if d["status_range"].get(&code).is_some() {
-                &d["status_range"][&code]
-            } else {
-                &d["function"][&code]
-            };
-            let spec = parse(&e["values"]);
-            if normalized(s(&e["type"])) == "Integer" {
-                adapter.remaps[&code]["bounds"] = json!([spec["min"], spec["max"]]);
-            }
+            adapter.set_bounds(&code, &d);
         }
         let env = options
             .get("env")
@@ -260,10 +247,7 @@ impl Driver {
                     .bindings
                     .insert(prop, Binding::new(Source::Machine { index }, writable));
             }
-            machines.push(Machine {
-                config: Arc::new(cfg.clone()),
-                state: cfg.get("initial_state").cloned().unwrap_or(json!({})),
-            });
+            machines.push(Machine::new(cfg));
         }
         let mut motions = vec![];
         let motion_taken = taken.clone();
@@ -393,7 +377,6 @@ impl Driver {
             synced: false,
             seq: 0,
             machines,
-            rules_id: String::new(),
             rules_fingerprint: String::new(),
         })
     }
@@ -593,7 +576,7 @@ impl Driver {
                     value: json!(false),
                 });
                 for machine in &mut self.machines {
-                    machine.invoke(Method::Reset, &json!({}))?;
+                    machine.reset();
                 }
                 for m in &mut self.motions {
                     m.reset();
@@ -774,10 +757,11 @@ impl Driver {
                                     Source::Machine { index } => {
                                         let index = *index;
                                         let old_state = self.machines[index].state.clone();
-                                        let result = self.machines[index].invoke(Method::Write, &json!({"prop":prop,"value":value,"codes":self.codes,"now":now}))?;
-                                        if let Err(error) =
-                                            self.apply_effects(index, result, &mut out)
-                                        {
+                                        // A failed program commits no state; failed effects roll it back.
+                                        let result = self.machines[index]
+                                            .invoke(Method::Write, &json!({"prop":prop,"value":value,"codes":self.codes,"now":now}))
+                                            .and_then(|result| self.apply_effects(index, result, &mut out));
+                                        if let Err(error) = result {
                                             self.machines[index].state = old_state;
                                             out.push(reject(
                                                 prop,

@@ -1,6 +1,0 @@
-Phase 0 sources (fetched 2026-09-20, latest at fetch time)
-- home-assistant/core dev @ 949a484720ac3ebd2f474ce7e408a800c6c4ebdc (2026-09-19)
-    path: core/homeassistant/components/tuya (30 files, ~9.7k lines) + core/tests/components/tuya
-- tuya-device-handlers 0.0.29 (PyPI latest; core's manifest pins the same)
-    path: handlers-dl/tuya_device_handlers-0.0.29/src/tuya_device_handlers (~7.1k lines)
-- tuya-device-sharing-sdk 0.2.15 (PyPI latest; core's manifest pins the same)

@@ -27,9 +27,8 @@ class TuyaDriver:
     def __init__(self, device: dict, *, rules: dict, env: HostEnv | None = None, use_quirks: bool = True, dpmap: dict | None = None,
                  allow_hazardous: bool = False, expose_unused: bool = False, overrides: dict | None = None,
                  device_settings: bool = False):
-        pack = rules
-        self.rules_id = register_rules(pack)
-        options = {"env": asdict(env or default_env(pack)), "use_quirks": use_quirks,
+        self.rules_id = register_rules(rules)
+        options = {"env": asdict(env or default_env(rules)), "use_quirks": use_quirks,
                    "dpmap": {str(k): v for k, v in (dpmap or {}).items()}, "allow_hazardous": allow_hazardous,
                    "expose_unused": expose_unused, "overrides": overrides or {}, "device_settings": device_settings}
         try:

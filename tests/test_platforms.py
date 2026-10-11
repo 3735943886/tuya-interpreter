@@ -19,8 +19,7 @@ def test_event_with_undecodable_payload_reads_as_unknown_not_a_crash():
 
 
 def test_camera_writes_state_on_any_update_not_just_its_own_dps():
-    """core's TuyaCameraEntity has no `_process_device_update` override, so (per
-    docs/analysis/catalog/F_core_crosscutting.md) it writes state on every update, whatever dp changed --
-    it must be `update_all`, not `own_dps`."""
+    """core's TuyaCameraEntity has no `_process_device_update` override, so it writes state on every update,
+    whatever dp changed -- it must be `update_all`, not `own_dps`."""
     (p,) = [e for e in classify(device("d", "sp"), only=("camera",)) if e.platform == "camera"]
     assert on_update(p, None, ["unrelated_dp"], None, {}).write_state
