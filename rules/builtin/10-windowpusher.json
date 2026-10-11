@@ -1,0 +1,48 @@
+{
+  "overrides": {
+    "5rta89nj": {
+      "dp": {
+        "104": {
+          "code": "percent_control",
+          "type": "Integer",
+          "mode": "RW",
+          "values": {
+            "unit": "%",
+            "min": 0,
+            "max": 100,
+            "scale": 0,
+            "step": 1
+          }
+        }
+      },
+      "device": {
+        "model": "Sliding Window Opener",
+        "kind": "cover",
+        "class": "window"
+      },
+      "props": {
+        "position": {
+          "src": "percent_control",
+          "role": "position"
+        },
+        "open": {
+          "src": "percent_control",
+          "type": "trigger",
+          "role": "open",
+          "send": 100
+        },
+        "close": {
+          "src": "percent_control",
+          "type": "trigger",
+          "role": "close",
+          "send": 0
+        },
+        "battery": {
+          "src": "residual_electricity",
+          "role": "battery",
+          "category": "diagnostic"
+        }
+      }
+    }
+  }
+}
