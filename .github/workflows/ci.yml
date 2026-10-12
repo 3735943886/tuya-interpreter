@@ -37,7 +37,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - run: cargo build --manifest-path rust/Cargo.toml --release --target wasm32-unknown-unknown
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: node bindings/js/smoke.mjs
