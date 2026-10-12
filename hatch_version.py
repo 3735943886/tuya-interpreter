@@ -16,8 +16,17 @@ def version_scheme(version):
     return guess_next_dev_version(version)
 
 
-__version__ = get_version(
-    root=str(Path(__file__).resolve().parent),
-    version_scheme=version_scheme,
-    parentdir_prefix_version='tuya-interpreter-',
-)
+def project_version(root):
+    """Ignore legacy tags; retain the already published first alpha as a baseline."""
+    return get_version(
+        root=str(root),
+        version_scheme=version_scheme,
+        scm={'git': {'describe_command': [
+            'git', 'describe', '--dirty', '--tags', '--long',
+            '--match', 'interpreter-v*', '--match', 'v0.1.0-alpha.1',
+        ]}},
+        parentdir_prefix_version='tuya-interpreter-',
+    )
+
+
+__version__ = project_version(Path(__file__).resolve().parent)

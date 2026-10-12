@@ -20,8 +20,8 @@ def python_version(version):
 
 def release_versions(cargo_version, tag=None):
     python = python_version(cargo_version)
-    if tag is not None and tag != f"v{cargo_version}":
-        raise ValueError(f"Release tag must be v{cargo_version}, got {tag}")
+    if tag is not None and tag != f"interpreter-v{cargo_version}":
+        raise ValueError(f"Release tag must be interpreter-v{cargo_version}, got {tag}")
     return cargo_version, python
 
 

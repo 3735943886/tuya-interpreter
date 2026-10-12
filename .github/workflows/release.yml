@@ -1,12 +1,12 @@
 name: Release
 
-# First release tag: v0.1.0-alpha.1 (crate 0.1.0-alpha.1 / PyPI 0.1.0a1).
+# Future tags: interpreter-vX.Y.Z[-alpha.N|-beta.N|-rc.N].
 # Cargo.toml must match the tag. PR/manual runs validate and build without publishing.
 # Setup: docs/releases.md (PyPI OIDC; crates.io token for first registration).
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["interpreter-v*.*.*"]
   pull_request:
     paths:
       - ".github/workflows/release.yml"
@@ -253,7 +253,7 @@ jobs:
 
   publish-pypi:
     # PRs and manual runs build artifacts only. Publishing requires a pushed version tag.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/interpreter-v')
     needs: [build, sdist, crate]
     runs-on: ubuntu-24.04
     environment:
@@ -272,7 +272,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-crates:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/interpreter-v')
     needs: [build, sdist, crate]
     runs-on: ubuntu-24.04
     environment:

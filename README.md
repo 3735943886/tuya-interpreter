@@ -327,11 +327,12 @@ The [release workflow](.github/workflows/release.yml) builds and tests 13 platfo
 | macOS | ARM64, x64 |
 | Windows | ARM64, x86, x64 |
 
-The planned first release uses tag `v0.1.0-alpha.1`: crate version `0.1.0-alpha.1` and
+The first release used tag `v0.1.0-alpha.1`: crate version `0.1.0-alpha.1` and
 PyPI version `0.1.0a1`, both named `tuya-interpreter`. The workflow checks that the tag matches
 Cargo and builds Python distributions with the corresponding version.
 
-A pushed version tag publishes to **crates.io and PyPI** after tests, all wheels, the source
+Future releases use `interpreter-v<SemVer>` tags, for example `interpreter-v0.1.0-alpha.2`.
+Existing `v*` tags remain preserved. A pushed `interpreter-v*` tag publishes to **crates.io and PyPI** after tests, all wheels, the source
 archive and crate packaging pass. PR/manual runs build artifacts without publishing.
 See [release setup](docs/releases.md) for PyPI Trusted Publishing, the crates.io first-registration
 token, subsequent OIDC publishing and release commands.

@@ -15,3 +15,7 @@ venv/
 
 # Resolve Cargo dependencies from manifests in fresh checkouts.
 Cargo.lock
+
+# Local project notes for coding agents.
+AGENTS.md
+agent.md

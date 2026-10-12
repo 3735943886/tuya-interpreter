@@ -1,7 +1,7 @@
 # Publishing tuya-interpreter
 
 One tag publishes the Rust crate and Python distributions under the same name,
-`tuya-interpreter`. The first planned release is:
+`tuya-interpreter`. The first published release is:
 
 | Item | Version |
 | --- | --- |
@@ -13,7 +13,10 @@ Cargo uses SemVer prereleases; Python uses PEP 440. `scripts/release_version.py`
 validates the Cargo version and exact tag, then supplies the corresponding Python version
 explicitly to all release builds. This avoids inheriting the old project's `0.4.*` tags.
 Alpha, beta and release-candidate tags use `-alpha.N`, `-beta.N` and `-rc.N` respectively.
-Stable tags use `vX.Y.Z`.
+Future tags use `interpreter-v<SemVer>`, such as `interpreter-v0.1.0-alpha.2`
+or `interpreter-v0.4.0`. Stable tags use `interpreter-vX.Y.Z`. Existing `v*` tags are
+preserved and do not trigger new releases. SCM selects the new namespace, with exactly
+`v0.1.0-alpha.1` retained as the already published baseline.
 
 ## One-time registry configuration
 
@@ -56,11 +59,12 @@ OIDC credentials. A configured token takes precedence; there is no fallback afte
    `cargo check --manifest-path examples/rust/Cargo.toml`. Cargo lockfiles are ignored;
    fresh checkouts resolve the latest versions allowed by each manifest.
 3. Commit the changes and run the Release workflow manually to validate and build artifacts.
-4. Push the matching version tag when ready to publish, for example:
+4. Push the matching version tag when ready to publish. For the next alpha, first set
+   Cargo to `0.1.0-alpha.2`, then:
 
 ```sh
-git tag v0.1.0-alpha.1
-git push origin v0.1.0-alpha.1
+git tag interpreter-v0.1.0-alpha.2
+git push origin interpreter-v0.1.0-alpha.2
 ```
 
 PR and manual runs build the candidate version from Cargo without publishing.
