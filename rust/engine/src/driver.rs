@@ -91,6 +91,15 @@ impl Driver {
         if device["id"].as_str().is_none() {
             return Err(EngineError::InvalidDevice("device needs id".into()));
         }
+        // Tables keyed by DP code or ID; absent is allowed, any other shape is a malformed export.
+        for table in ["function", "status_range", "status", "local_strategy"] {
+            let value = &device[table];
+            if !value.is_null() && !value.is_object() {
+                return Err(EngineError::InvalidDevice(format!(
+                    "device {table} must be an object keyed by DP code or ID"
+                )));
+            }
+        }
         if let Some(dpmap) = options.get("dpmap")
             && (!dpmap.is_object()
                 || fields(dpmap).any(|(_, code)| code.as_str().is_none_or(str::is_empty)))

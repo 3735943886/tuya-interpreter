@@ -1,8 +1,20 @@
 # Tuya DP engine — specification (draft 2)
 
-> The engine is `rust/engine/` driven by the rule pack `rules/builtin/00-default.json` (this draft predates the move; its
-> platform builders are now the pack's `entities` specs). "IL" and "tuya2ha" below mean this engine's own model,
-> **not** the ildevice IL (which the top-level package produces from the engine's entity plans).
+> **Status.** This is the reference-behavior specification the engine was built against. It was written for an
+> earlier Python implementation, so file references such as `tuya/runtime.py`, `tuya/platforms.py`,
+> `assemble.py` and `tables/*.json` name that implementation. They now correspond to:
+>
+> | Spec reference | Current location |
+> | --- | --- |
+> | `tuya/platforms.py` platform builders, `tables/*` | `entities` specs and tables in `rules/builtin/00-default.json` |
+> | `classify`, `EntityPlan`, `read`/`write` (section 7) | `rust/engine/src/entity.rs`, `rust/engine/src/plan.rs` |
+> | `assemble.py`, host `TuyaDriver` | `rust/engine/src/assembly.rs`, `rust/engine/src/driver.rs` |
+> | `tuya/standard.py` | `scripts/standard.py` (generator) and the pack's category data |
+>
+> "IL" and "tuya2ha" below mean this engine's own model, **not** the ildevice IL that the driver publishes from
+> the engine's entity plans. Section 12 governs engine reads; the ildevice output layer then applies its own value
+> contract (for example, a `binary` property is always published as a boolean). The README lists the remaining
+> intentional differences from Home Assistant, such as unmirrored cover positions.
 
 Goal: a sans-I/O, dependency-free description of *everything* HA core's official `tuya`
 integration (dev @949a484 + tuya-device-handlers 0.0.29) does, so any host can reproduce
@@ -369,7 +381,7 @@ declared lossiness P-10). T4 one test per parity item (section 12). T5 dpid path
 | P-09 | swing options never list BOTH; oscillate = first found of h/v | `OfPresent` | reproduce |
 | P-10 | remap round-trip lossy (banker's both ways) | `remap` | reproduce |
 | P-11 | manufacturer-only quirk => model/model_id None | `device_info` | reproduce |
-| P-12 | bool read leaks 0/1 | `validate_bool` | reproduce |
+| P-12 | bool read leaks 0/1 | `validate_bool`; the ildevice output publishes `false`/`true` | reproduce (engine read) |
 | P-13 | malformed `values` (bad JSON/missing key/`int()` truncation) raises out of find_dpcode | `SchemaError` at classify (whole device) | **deviate** (pending Q3) |
 | P-14 | `alarm_msg`/event b64+utf8/utf16 decode failure raises; `json.loads(dict)` TypeError | UNKNOWN | **deviate** (pending Q3) |
 | P-15 | int read rejects float; bool counts as int; step never enforced | `validate_int` | reproduce |

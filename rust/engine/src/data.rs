@@ -116,10 +116,9 @@ impl Role {
     pub fn read(&self, st: &V) -> V {
         let raw = &st[&self.code];
         match self.kind {
-            // Python equality accepts 0 and 1; the read value is always a canonical boolean.
             DpKind::Boolean => {
                 if !raw.is_null() && (eq(raw, &json!(true)) || eq(raw, &json!(false))) {
-                    json!(eq(raw, &json!(true)))
+                    raw.clone()
                 } else {
                     V::Null
                 }

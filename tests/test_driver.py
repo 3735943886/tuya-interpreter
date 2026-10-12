@@ -386,3 +386,10 @@ def test_boolean_values_are_canonical_booleans():
     assert d.handle(2, Message("active", {"20": False})) == []
     assert d.handle(3, Message("active", {"20": 1})) == [Value("switch_led", True)]
     assert d.handle(4, Message("active", {"20": "on"})) == [Absent("switch_led")]
+
+
+@pytest.mark.parametrize("table", ["function", "status_range", "status", "local_strategy"])
+def test_malformed_device_tables_are_rejected(table):
+    with pytest.raises(ValueError, match=f"device {table} must be an object"):
+        TuyaDriver({**light(), table: []}, rules=rules())
+    TuyaDriver({**light(), table: None}, rules=rules())     # absent is allowed

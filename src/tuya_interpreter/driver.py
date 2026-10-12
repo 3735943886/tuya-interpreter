@@ -21,7 +21,11 @@ def default_env(rules: dict) -> HostEnv:
 
 
 def descriptor_of(device: dict, **kwargs) -> dict:
-    return TuyaDriver(device, **kwargs).descriptor
+    driver = TuyaDriver(device, **kwargs)
+    try:
+        return driver.descriptor
+    finally:
+        driver.close()
 
 
 class TuyaDriver:

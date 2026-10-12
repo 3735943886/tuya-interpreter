@@ -247,7 +247,7 @@ impl Binding {
         cache: &mut ReadCache,
     ) -> Result<V, String> {
         match &self.source {
-            Source::Dp { role, .. } => Ok(dp_read(role, st, definition)),
+            Source::Dp { role, .. } => Ok(il_value(dp_read(role, st, definition), definition)),
             Source::Layout { plan, row } => {
                 let (p, row, entity) = layout(plans, *plan, *row, rules)?;
                 let mut status = Cow::Borrowed(st);
@@ -332,11 +332,18 @@ struct ReadFrame {
     values: V,
 }
 
-/// ildevice value rules: a select value outside its options is unknown; numbers are canonical.
+/// ildevice value rules: a select value outside its options is unknown; a binary value is a
+/// boolean (core reads leak 0 and 1, parity P-12); numbers are canonical.
 pub(crate) fn il_value(v: V, definition: &V) -> V {
     if definition["type"] == "select" && !v.is_null() && !items(&definition["options"]).contains(&v)
     {
         V::Null
+    } else if definition["type"] == "binary" && v.is_number() {
+        match n(&v) {
+            0.0 => json!(false),
+            1.0 => json!(true),
+            _ => V::Null,
+        }
     } else if v.is_number() {
         number(n(&v))
     } else {

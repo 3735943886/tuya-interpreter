@@ -134,6 +134,9 @@ Use the populated device export, or normalize the raw response to the structure 
 
 ### Missing schema and unclassified DPs
 
+`function`, `status_range`, `status` and `local_strategy` may be absent, but when present each must be
+a JSON object; any other shape is rejected as an invalid device rather than silently ignored.
+
 Normal automatic classification needs feature definitions in `function` / `status_range`.
 The engine does not infer a device's function from a DP number and current value alone.
 Product quirks and `dp` overrides can supply missing definitions before classification.
