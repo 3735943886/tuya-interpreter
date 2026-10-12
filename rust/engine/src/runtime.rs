@@ -60,7 +60,10 @@ pub(crate) fn validated(rules: &Value) -> Result<String, EngineError> {
 }
 
 pub(crate) fn fingerprint(rules: &Value) -> String {
-    format!("{:x}", Sha256::digest(rules.to_string().as_bytes()))
+    Sha256::digest(rules.to_string().as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,5 +174,18 @@ impl Driver {
         }
         state.validate_state()?;
         Ok(Self { state, rules })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_preserves_sha256_lowercase_hex() {
+        assert_eq!(
+            fingerprint(&json!({})),
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        );
     }
 }

@@ -16,4 +16,4 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.23"
 indexmap = { version = "2", features = ["serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
