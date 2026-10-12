@@ -6,7 +6,7 @@ import fixtures
 import pytest
 from rule_data import rules
 
-from tuya2ildevice import Connected, Message, TuyaDriver, Value
+from tuya_interpreter import Connected, Message, TuyaDriver, Value
 
 WIRE = {"Boolean", "Integer", "Enum", "String", "Raw", "Json", "Bitmap"}
 

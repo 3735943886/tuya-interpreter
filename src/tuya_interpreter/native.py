@@ -13,7 +13,7 @@ from pathlib import Path
 @functools.cache
 def library():
     suffix = '.dll' if sys.platform == 'win32' else '.dylib' if sys.platform == 'darwin' else '.so'
-    filename = ('tuya_rule_engine' if sys.platform == 'win32' else 'libtuya_rule_engine') + suffix
+    filename = ('tuya_interpreter' if sys.platform == 'win32' else 'libtuya_interpreter') + suffix
     bundled = Path(__file__).parent / filename
     target = Path(__file__).resolve().parents[2] / 'rust/target'
     # In a checkout, the most recently built profile, so a stale build is never picked over a fresh one.

@@ -10,3 +10,5 @@ venv/
 /rust/target/
 
 /prebuilt/
+
+/examples/rust/target/

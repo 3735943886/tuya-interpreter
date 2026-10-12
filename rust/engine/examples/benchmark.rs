@@ -1,7 +1,7 @@
 //! Same-process comparison of the typed Rust API and the JSON transport, excluding construction.
 use serde_json::{Value, json};
 use std::{hint::black_box, sync::Arc, time::Instant};
-use tuya_rule_engine::{Channel, Driver, DriverOptions, Input, RulePack, evaluate_json};
+use tuya_interpreter::{Channel, Driver, DriverOptions, Input, RulePack, evaluate_json};
 
 fn call(request: Value) -> Value {
     let mut response: Value = serde_json::from_str(&evaluate_json(&request.to_string())).unwrap();

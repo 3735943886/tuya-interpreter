@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { Driver, Engine } from "./engine.mjs";
 
 const root = new URL("../../", import.meta.url);
-const wasm = process.argv[2] ?? new URL("rust/target/wasm32-unknown-unknown/release/tuya_rule_engine.wasm", root);
+const wasm = process.argv[2] ?? new URL("rust/target/wasm32-unknown-unknown/release/tuya_interpreter.wasm", root);
 const engine = await Engine.load(await readFile(wasm));
 const rules = engine.install(JSON.parse(await readFile(new URL("rules/builtin/00-default.json", root))), "default");
 

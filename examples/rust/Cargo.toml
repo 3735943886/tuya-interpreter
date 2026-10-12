@@ -1,0 +1,16 @@
+[package]
+name = "tuya-interpreter-toggle-example"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+# Keep transport dependencies outside the interpreter's workspace and core crate.
+[workspace]
+
+[dependencies]
+tuya-interpreter = { path = "../../rust/engine" }
+rustuya = { version = "=0.4.3", features = ["tokio"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal"] }
+clap = { version = "4", features = ["derive"] }

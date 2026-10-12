@@ -1,10 +1,10 @@
-"""Host-side fixture loading; production bindings never read rule files."""
+"""Host-side fixture loading; drivers never read rule files implicitly."""
 import functools
 import json
 from pathlib import Path
 
-from tuya2ildevice.native import call as native_call
-from tuya2ildevice.native import register_rules
+from tuya_interpreter.native import call as native_call
+from tuya_interpreter.native import register_rules
 
 
 @functools.cache

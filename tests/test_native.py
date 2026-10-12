@@ -5,7 +5,7 @@ import pytest
 from helpers import curtain
 from rule_data import call, rules
 
-from tuya2ildevice import (
+from tuya_interpreter import (
     Command,
     Connected,
     Message,
@@ -50,7 +50,7 @@ def test_rule_layout_changes_without_rebuilding_rust():
 
 def test_the_package_has_no_python_conversion_code():
     import importlib
-    for name in ('tuya2ildevice.tuya', 'tuya2ildevice.assemble', 'tuya2ildevice.fallback'):
+    for name in ('tuya_interpreter.tuya', 'tuya_interpreter.assemble', 'tuya_interpreter.fallback'):
         with pytest.raises(ImportError):
             importlib.import_module(name)
     driver = TuyaDriver(curtain(), rules=rules())

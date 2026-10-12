@@ -6,8 +6,15 @@ import pytest
 from helpers import strat
 from rule_data import rules
 
-from tuya2ildevice import Command, Connected, Message, OverrideError, TuyaDriver, Value
-from tuya2ildevice.io import SettingsChanged
+from tuya_interpreter import (
+    Command,
+    Connected,
+    Message,
+    OverrideError,
+    TuyaDriver,
+    Value,
+)
+from tuya_interpreter.io import SettingsChanged
 
 PLUG = {"id": "plug1", "category": "cz", "product_id": "p", "name": "Plug", "function": {},
         "status_range": {"add_ele": {"code": "add_ele", "type": "Integer", "report_type": "sum",

@@ -175,7 +175,7 @@ The crate exports a typed, in-memory API independently of the C ABI:
 ```rust
 use std::sync::Arc;
 use serde_json::json;
-use tuya_rule_engine::{Channel, Driver, DriverOptions, Input, RulePack};
+use tuya_interpreter::{Channel, Driver, DriverOptions, Input, RulePack};
 
 // The host loads and decodes both values.
 let rules = Arc::new(RulePack::new(decoded_rules)?);
@@ -228,7 +228,7 @@ The registry caches rules, never device state.
 
 `{"op": "remove_rules", "rules_id": "<content id>"}` releases a registry entry and returns whether it existed.
 Only remove a pack after its last JSON-ABI driver stops using the ID; later requests with that ID fail until it is
-installed again. Python provides `tuya2ildevice.native.unregister_rules(id)` and JavaScript `engine.remove(id)`.
+installed again. Python provides `tuya_interpreter.native.unregister_rules(id)` and JavaScript `engine.remove(id)`.
 Existing drivers still verify the content fingerprint if the ID is reinstalled.
 
 | `op` | Request fields | Result |

@@ -1,0 +1,28 @@
+{
+  "id": "example-toggle-switch",
+  "name": "Example toggle switch",
+  "category": "kg",
+  "product_id": "example-switch-product",
+  "product_name": "Example single-channel switch",
+  "sub": false,
+  "support_local": true,
+  "function": {
+    "switch_1": {"code": "switch_1", "type": "Boolean", "values": {}}
+  },
+  "status_range": {
+    "switch_1": {"code": "switch_1", "type": "Boolean", "values": {}}
+  },
+  "local_strategy": {
+    "1": {
+      "status_code": "switch_1",
+      "value_convert": "default",
+      "config_item": {
+        "statusFormat": {"switch_1": "$"},
+        "valueType": "Boolean",
+        "valueDesc": {},
+        "enumMappingMap": {}
+      }
+    }
+  },
+  "status": {"switch_1": false}
+}

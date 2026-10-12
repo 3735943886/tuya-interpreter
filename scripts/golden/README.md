@@ -26,7 +26,7 @@ are NOT in snapshots (they live in core's test_*.py parametrized tests) -> extra
   state-after-update cases (test_percent_state_on_cover style), unit-conversion cases (number/sensor unit tests, us_customary).
 - Run oracle scripts with the venv that has tuya-device-handlers==0.0.29 + tuya-device-sharing-sdk==0.2.15 (+ cryptography, paho-mqtt, requests).
 
-## Phase 5 progress (now `tuya2ildevice`, formerly IL v2 in `src/rustuya_ha/tuya2ha/v2/`)
+## Phase 5 progress (now `tuya_interpreter`, formerly IL v2 in `src/rustuya_ha/tuya2ha/v2/`)
 - `tests/test_golden.py` compares the engine's `classify` operation (through `tests/engine.py`) against `golden.json`, per implemented
   platform. It asserts 324 fixtures are present (a vacuous-pass bug was caught this way: a broken fixture path had made
   the first run compare nothing).

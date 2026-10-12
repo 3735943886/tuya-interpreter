@@ -189,8 +189,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tuya-rule-engine"
-version = "0.1.0"
+name = "tuya-interpreter"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64",
  "indexmap",

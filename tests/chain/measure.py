@@ -3,12 +3,12 @@ import collections
 import json
 import pathlib
 
-import fixtures  # tuya2ildevice/tests/golden
+import fixtures  # tuya_interpreter/tests/golden
 from ildevice.core.descriptor import parse_descriptor  # il-ha core (see conftest)
 from ildevice.core.plan import plan_entities
 from rule_data import rules
 
-from tuya2ildevice import descriptor_of
+from tuya_interpreter import descriptor_of
 
 GOLDEN = pathlib.Path(__file__).resolve().parents[1] / "golden"
 

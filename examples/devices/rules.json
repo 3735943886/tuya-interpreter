@@ -1,0 +1,18 @@
+{
+  "platforms": {
+    "sensor": {
+      "categories": {
+        "kg": {
+          "$append": [
+            {
+              "key": "temp_current",
+              "translation_key": "temperature",
+              "device_class": "temperature",
+              "state_class": "measurement"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

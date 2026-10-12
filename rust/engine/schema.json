@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:tuya2ildevice:rule-pack:1",
+  "$id": "urn:tuya_interpreter:rule-pack:1",
   "title": "Tuya portable rule pack version 1",
   "type": "object",
   "required": [

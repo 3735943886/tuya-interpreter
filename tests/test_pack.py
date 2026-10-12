@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tuya2ildevice import merge_rules
+from tuya_interpreter import merge_rules
 
 ROOT = Path(__file__).resolve().parent.parent
 PACK = ROOT / "rules" / "builtin"

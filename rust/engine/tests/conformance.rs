@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use tuya_rule_engine::evaluate_json;
+use tuya_interpreter::evaluate_json;
 
 #[test]
 fn rejects_invalid_requests() {
@@ -75,7 +75,7 @@ fn frozen_driver_traces() {
 #[test]
 fn ffi_ownership_and_invalid_inputs() {
     use std::ffi::CStr;
-    use tuya_rule_engine::{tuya_engine_eval, tuya_engine_free};
+    use tuya_interpreter::{tuya_engine_eval, tuya_engine_free};
     for input in [std::ptr::null(), c"not json".as_ptr(), c"\xff".as_ptr()] {
         unsafe {
             let output = tuya_engine_eval(input);
@@ -94,7 +94,7 @@ fn ffi_ownership_and_invalid_inputs() {
 #[test]
 fn host_allocated_requests_round_trip() {
     use std::ffi::CStr;
-    use tuya_rule_engine::{
+    use tuya_interpreter::{
         tuya_engine_alloc, tuya_engine_dealloc, tuya_engine_eval, tuya_engine_free,
     };
     let request = br#"{"op":"merge","mappings":[{"value":50}]}"#;

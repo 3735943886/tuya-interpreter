@@ -3,9 +3,9 @@ requires = ["hatchling", "setuptools-scm"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tuya2ildevice"
+name = "tuya-interpreter"
 dynamic = ["version"]
-description = "Sans-IO converter: Tuya (rustuya / rustuya-bridge) device + DPS packets <-> ildevice descriptor, values and commands"
+description = "Portable Tuya device interpreter: device schemas and DPS <-> ildevice descriptors, values, events and commands"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = []
@@ -13,7 +13,7 @@ readme = "README.md"
 classifiers = ["Programming Language :: Python :: 3", "Topic :: Home Automation", "Programming Language :: Rust"]
 
 [project.urls]
-Repository = "https://github.com/3735943886/tuya2ildevice"
+Repository = "https://github.com/3735943886/tuya-interpreter"
 
 [project.optional-dependencies]
 test = ["pytest", "jsonschema", "tuya-device-sharing-sdk==0.2.15", "cryptography", "setuptools-scm"]      # the oracle tests/test_adapter.py checks the value conversions against
@@ -23,13 +23,13 @@ source = "code"
 path = "hatch_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tuya2ildevice"]
+packages = ["src/tuya_interpreter"]
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "scripts", "docs", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "hatch_build.py", "hatch_version.py", "rust", "rules", "bindings"]
+include = ["src", "tests", "scripts", "docs", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "hatch_build.py", "hatch_version.py", "rust", "rules", "bindings", "examples"]
 exclude = ["rust/target"]
 
 [tool.pytest.ini_options]
@@ -47,7 +47,7 @@ test-requires = ["pytest"]
 test-command = 'python -m pytest {project}/tests/test_native.py {project}/tests/test_rules.py --override-ini=pythonpath= -q -k "not canonical_rule_pack_validates_against_its_schema"'
 
 [tool.cibuildwheel.linux]
-environment = { TUYA_ENGINE_BUNDLED_LIBRARY = "prebuilt/libtuya_rule_engine.so" }
+environment = { TUYA_ENGINE_BUNDLED_LIBRARY = "prebuilt/libtuya_interpreter.so" }
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-i686-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"

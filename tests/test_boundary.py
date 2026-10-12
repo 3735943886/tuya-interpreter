@@ -6,8 +6,8 @@ import pytest
 from helpers import curtain
 from rule_data import rules
 
-import tuya2ildevice
-from tuya2ildevice import (
+import tuya_interpreter
+from tuya_interpreter import (
     Command,
     Connected,
     Message,
@@ -44,7 +44,7 @@ def test_rules_are_required_and_transport_apis_are_absent():
     with pytest.raises(TypeError, match='rules'):
         TuyaDriver(curtain())
     for name in ('Hub', 'IlTopics', 'Publish', 'Subscribe', 'BridgeCommand', 'SaveSettings'):
-        assert not hasattr(tuya2ildevice, name)
+        assert not hasattr(tuya_interpreter, name)
 
 
 def test_device_identifier_is_not_validated_as_an_mqtt_topic():

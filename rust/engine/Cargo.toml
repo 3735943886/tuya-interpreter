@@ -1,9 +1,12 @@
 [package]
-name = "tuya-rule-engine"
-version = "0.1.0"
+name = "tuya-interpreter"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
+description = "Portable Tuya device interpreter: schemas and DPS to intermediate device semantics"
+repository = "https://github.com/3735943886/tuya-interpreter"
+readme = "../../README.md"
 
 [lib]
 crate-type = ["rlib", "cdylib"]

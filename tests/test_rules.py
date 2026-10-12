@@ -4,8 +4,8 @@ import copy
 import pytest
 from rule_data import rules
 
-from tuya2ildevice import Connected, Message, TuyaDriver, Value, merge_rules
-from tuya2ildevice.native import _call, register_rules, unregister_rules
+from tuya_interpreter import Connected, Message, TuyaDriver, Value, merge_rules
+from tuya_interpreter.native import _call, register_rules, unregister_rules
 
 DEVICE = {'id': 'd', 'product_id': 'p', 'category': 'kg',
           'function': {'switch_1': {'type': 'Boolean', 'values': {}}}}

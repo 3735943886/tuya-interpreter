@@ -6,7 +6,7 @@ import pytest
 from helpers import curtain, fn, light, strat
 from rule_data import rules
 
-from tuya2ildevice import (
+from tuya_interpreter import (
     Absent,
     Command,
     Connected,
@@ -173,7 +173,7 @@ def test_unused_dps_get_properties_by_type():
     
 
 # --- user overrides ----------------------------------------------------------------------------
-from tuya2ildevice import OverrideError, merge_all
+from tuya_interpreter import OverrideError, merge_all
 
 
 def _kg():
@@ -228,7 +228,7 @@ def test_merge():
 
 
 # --- converters ----------------------------------------------------------------------------------
-from tuya2ildevice.io import CancelTimer, SetTimer, Timer
+from tuya_interpreter.io import CancelTimer, SetTimer, Timer
 
 
 def _motion(outs):
@@ -365,10 +365,10 @@ def test_after_preload_driving_a_device_reads_no_file(monkeypatch):
 
     import fixtures
 
-    import tuya2ildevice
+    import tuya_interpreter
 
     records = [fixtures.load(code) for code in fixtures.all_codes()]      # the fixtures themselves are files
-    tuya2ildevice.preload()
+    tuya_interpreter.preload()
 
     def no_io(*args, **kwargs):
         raise AssertionError(f"file read after preload: {args[:1]}")

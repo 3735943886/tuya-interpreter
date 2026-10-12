@@ -1,331 +1,313 @@
-# tuya2ildevice
+# tuya-interpreter
 
-The one place that interprets Tuya. A Sans-IO Rust engine with a thin Python wrapper: takes a Tuya device as [rustuya](https://github.com/3735943886/rustuya) /
-[rustuya-bridge](https://github.com/3735943886/rustuya-bridge) know it and produces an
-[ildevice](https://github.com/3735943886/ildevice): descriptor, live values and events from dps packets, and dps for
-ildevice commands. MQTT, TCP and other transports belong to the host. The engine opens no sockets and reads no clock. Other projects
-([rustuya-local](https://github.com/3735943886/rustuya-local), ildevice hosts,
-[rustuya-manager](https://github.com/3735943886/rustuya-manager)) import this instead of carrying their own Tuya knowledge.
+A portable Tuya device interpreter with bidirectional conversion. It interprets device metadata and DPS packets,
+produces an [ildevice](https://github.com/3735943886/ildevice) intermediate device description,
+values and events, and converts ildevice commands back into Tuya DPS.
 
-```
-pip install tuya2ildevice              # no dependencies;  [test] for the tests
-```
+ildevice is a human-readable, developer-friendly intermediate device model. It describes device
+properties, values, events and commands in a common format that is easy to inspect and use in
+downstream applications. The converter keeps Tuya knowledge in one place so hosts can use the
+same device semantics across transports and languages.
 
-```python
-from tuya2ildevice import TuyaDriver, Connected, Message, Command, descriptor_of
-
-# device and rules are decoded data supplied by the host.
-
-descriptor_of(device, rules=rules)                 # just the ildevice descriptor of a tuyadevices.json entry
-d = TuyaDriver(device, rules=rules)                # the state machine (il.md section 8)
-d.handle(now, Connected())            # -> [Descriptor]
-d.handle(now, Message("active", {"1": True}))   # -> [Value(...), Event(...)]
-d.handle(now, Command("switch_1", "off"))    # -> [SendMessage("set", {"dps": {"1": False}})]  or  [Reject(...)]
+```text
+Tuya device JSON + rule pack
+            │
+            ▼
+Tuya DPS ⇄ interpretation engine ⇄ ildevice descriptor / values / events / commands
 ```
 
-## Portable rules and Rust engine
+The implementation is a Sans-IO Rust engine with Python and JavaScript/WebAssembly bindings
+and a JSON C ABI. The host supplies data and time, and executes the returned effects.
+The engine opens no sockets and reads no clock.
 
-The Python `TuyaDriver` delegates classification, descriptor assembly, commands, value conversion,
-quirks, delta accumulation and cover state to Rust through a JSON C ABI. The wheel includes
-the native library; building from source requires Cargo (Rust 1.88 or newer). Another language binds the same two C
-functions (see [the engine documentation](docs/rust-engine.md)).
+## Device JSON: what the converter uses
 
-Rust hosts can use `RulePack`, `Driver`, `DriverOptions`, `Input` and `Output` directly, keeping device
-state in memory without serializing it for each packet. Packs are caller-owned `Arc`s; failed inputs
-leave the driver unchanged. See [the Rust API](docs/rust-engine.md#native-rust-api).
+Use a JSON-safe export of a device populated by
+[tuya-device-sharing-sdk](https://github.com/tuya/tuya-device-sharing-sdk), or a device entry from
+[tuyawizard](https://github.com/3735943886/tuyawizard)'s `tuyadevices.json`.
+The input is one decoded device object, rather than the entire device list or an SDK object.
+Device metadata supplies the schema; live input uses Tuya's standard DP ID–value pairs,
+such as `{"1": true, "2": 235}`. Hosts can obtain these pairs through
+[rustuya](https://github.com/3735943886/rustuya),
+[TinyTuya](https://github.com/jasonacox/tinytuya), or any other Tuya transport implementation.
+The host unwraps the transport response and passes the flat DP map to the interpreter;
+the transport library does not need to supply the device schema.
 
-[`rules/builtin/00-default.json`](rules/builtin/00-default.json) is the canonical rule pack. Every device interpretation is data:
-platform/category tables, and per platform an entity spec — its roles and their DP candidates, how a plan is built,
-the state it reads, the actions it writes and the properties it lays out — plus units, mappings, feature bits and
-quirks. The engine supplies only the interpreter, DP types and codecs, so changing these rules (even adding a
-platform) does not require rebuilding Rust. The host supplies `rules` explicitly, optionally composing decoded layers with `merge_rules`.
-`TUYA_ENGINE_LIBRARY` selects another native library. Packs are cached by content for the process lifetime.
+There is no separate `schema` field. Here, **device schema** means the definitions in
+`function` and `status_range`, with `local_strategy` connecting local DP IDs to those definitions.
 
-A `converters.declarative` override adds computed values, write commands and state/timer programs
-using JSON expressions; there are no code plugins. See [the rule language, ABI and build instructions](docs/rust-engine.md).
+| JSON field | Contents | How it is used |
+| --- | --- | --- |
+| `id` | Device ID, as a string | Required for driver construction; device identity and device-specific overrides. |
+| `name` | Device name | Descriptor label. |
+| `category` | Tuya category such as `cz`, `dj` or `cl` | Selects the category's classification rules. |
+| `product_id` | Product ID | Selects product-specific quirks and overrides; supplies model identity. |
+| `product_name` | Product name | Default model name, unless a quirk or override supplies it. |
+| `function` | Object keyed by DP code, containing writable feature definitions | Resolves command sources and writable properties, including types and allowed values. |
+| `status_range` | Object keyed by DP code, containing reported feature definitions | Resolves state sources, types, ranges, scales, units and report behavior. |
+| `local_strategy` | Object keyed by local DP ID | Maps raw DPS to codes and applies the named value conversion with its configuration. |
+| `status` | Initial values keyed by DP code | Used by classification probes and initial device interpretation; live packets are supplied separately. |
 
-## Packets and commands
+Other connection fields, such as `local_key`, IP address, protocol version and parent-device routing,
+belong to the host. Link availability is supplied through `Connected` and `Disconnected` inputs.
 
-- Numeric properties use the native unit of their values. For example, a plug reporting `500 mA` publishes
-  `500` with unit `mA`; a suggested display unit such as `A` does not change the wire unit or magnitude.
-- `Message(channel, json)`: `active` (device push: fires events, accumulates `add_ele`-style deltas) or `passive` /
-  `state` (readback, snapshot: values only; with `delta.accept_passive`, a passive report adds its delta too, see
-  [Delta settings](#delta-settings)). `json` is a flat `{dp: value}` map (the host has already decoded whatever
-  the bridge's own wire payload looked like — see the host boundary below).
-- `Command(prop, value)` is checked as il.md section 5 says before anything is sent; failures come back as `Reject`.
-  Values convert as in Home Assistant core (brightness goes through 0..255), so a written value can differ slightly
-  from what is read back. A cover's position is the device's own number, never mirrored (core mirrors it); a device
-  that counts the other way is set so by its cover settings (below).
-- A `passive` report (a live one: the host drops retained ones) that changes a value is the device's own push, like
-  `active`: converters see it as live; one that changes nothing is a readback. Events fire only from `active`. `state`, the bridge's
-  merged view of what `active` / `passive` carried, is a snapshot: the first one after a connect sets everything, a
-  later one only what it alone brings, and never as a push. An increment (`report_type: sum`) is added only from
-  `active`.
-- Covers of class garage/gate are read only unless `TuyaDriver(..., allow_hazardous=True)` (il.md S-1).
-- A dp no platform table claims gets no property, as in Home Assistant core; `TuyaDriver(..., expose_unused=True)` gives
-  each one a property chosen by its Tuya type. Integer, Enum and Boolean are writable only if the dp is
-  in `function`; String, Raw, Json and Bitmap are read-only. `config` if writable, else `diagnostic`.
-- Assembled: switch, button, select, number, sensor, binary_sensor, event, light, cover, fan, siren, valve,
-  humidifier, climate, alarm (kind `alarm`), vacuum. Not assembled: camera (a stream is outside the IL; `driver.unsupported` lists it).
-  A doorbell `alarm_message` event loses its message text (an ildevice event has only a kind).
+### Inside the schema fields
 
-## User overrides
+A `function` or `status_range` entry provides `code`, `type` and `values`.
+`status_range` may also provide `report_type`, including `sum` for increments that need accumulation.
+`values` can be a decoded object or a JSON string; both forms are accepted.
 
-Tuya devices are fragmented: a cloud schema can give a dp a non-standard code, leave a dp out, speak other words
-(`on`/`off`/`pause` instead of `open`/`close`/`stop`) or run a position the other way. Overrides fix that in Tuya's own
-terms, before classification, so the fixed device goes through the same tables as any other and every IL consumer
-(il-ha, a discovery publisher, ...) sees the fix.
+Supported DP types are `Boolean`, `Integer`, `Enum`, `Bitmap`, `String`, `Raw` and `Json`.
+Integer definitions describe `min`, `max`, `scale`, `step` and an optional `unit`;
+Enum definitions contain `range`, and Bitmap definitions can contain `label`.
+The actual interpretation of Raw and Json values depends on the relevant codec and rules.
 
-`TuyaDriver(device, rules=rules, overrides=mapping)`; `mapping` is `{product_id or device id: block}`,
-already loaded (`merge_all([...])` merges several, later wins). File discovery and loading belong to the host.
-The block format is described below; Rust validates and applies it:
+A `local_strategy` entry provides:
 
-```json
-{ "<product_id>": {
-    "dp":     {"104": {"code": "percent_control", "type": "Integer", "values": {"min": 0, "max": 100, "scale": 0, "step": 1}},
-               "101": {"code": "control"}},
-    "remove": ["percent_state"],
-    "category": "cl",
-    "remap":  {"control": {"alias": {"on": "open", "off": "close", "pause": "stop"}}},
-    "cover":  {"invert_position": true, "settle": 5},
-    "delta":  {"accept_passive": true},
-    "props":  {"countdown_1": {"label": "Timer", "category": "config", "rw": false}},
-    "device": {"model": "Sliding Window Opener"},
-    "converters": {"declarative": {"props": {"glow": {"type": "binary"}}, "update": []}},
-    "expose_unused": true } }
-```
+| Nested field | Purpose |
+| --- | --- |
+| `status_code` or a code in `config_item.statusFormat` | Connects the DP ID to a semantic code. |
+| `value_convert` | Names the raw-to-code value conversion, such as `default` or `enum`. |
+| `config_item` | Conversion configuration, including `valueType`, `valueDesc` and `enumMappingMap` where applicable. |
 
-| key | fixes |
-|---|---|
-| `dp` with a `type` | a dp the schema lacks or describes wrongly (defined like a quirk's `DefineDp`) |
-| `dp` with only a `code` | a dp with a non-standard code: renamed, its type, range and value strategy kept |
-| `remove` | a dp that should not be used (the tables then fall back, e.g. position read from the target) |
-| `category` | the Tuya category the tables are chosen by |
-| `remap.<code>.alias` | other words: device value -> standard value, both ways (an Enum's range is translated too) |
-| `remap.<code>.invert` | the other direction: a Boolean negated, an Integer mirrored in its range (not for a cover's position or command: use `cover`) |
-| `cover` | a cover's direction and motion (below) |
-| `props`, `device` | the finished descriptor: label, class, category, unit, role, read only, hidden; device kind/class/label/model |
-| `props.<name>` with a `src` | a property defined from a dp (below), replacing one of that name |
-| `converters` | `declarative` (JSON programs, below) |
-| `expose_unused` | this device only: every dp no table claims gets a property of its own |
-| `auto: false` | no property from the tables at all: only what `props` defines and the converters give |
+The host can also supply `TuyaDriver(..., dpmap={"1": "switch_1"})` when it already knows
+an ID-to-code mapping. A mapping identifies a DP; its feature definitions still come from
+schema metadata or rules/overrides.
 
-A property defined from a dp builds what the tables cannot, such as a cover from a position dp alone (a window opener
-whose category has no cover table):
+### Example device entry
 
-```json
-{ "<product_id>": {
-    "dp":     {"104": {"code": "percent_control", "type": "Integer", "mode": "RW",
-                       "values": {"unit": "%", "min": 0, "max": 100, "scale": 0, "step": 1}}},
-    "device": {"kind": "cover", "class": "window"},
-    "props":  {"position": {"src": "percent_control", "role": "position"},
-               "open":     {"src": "percent_control", "type": "trigger", "role": "open", "send": 100},
-               "close":    {"src": "percent_control", "type": "trigger", "role": "close", "send": 0},
-               "battery":  {"src": "residual_electricity", "role": "battery", "category": "diagnostic"}} } }
-```
-
-Its `type` follows the dp's (Boolean `binary`, Integer `number`, Enum `select`, others `text`) unless given; `min`,
-`max`, `step`, `unit` and `options` come from the dp unless given; it is writable when the dp is in `function` (`rw:
-false` makes it read only); a `trigger` writes its `send` value. Values go through `remap` like any other.
-
-Unknown keys raise `OverrideError`. To reload rules or overrides, the host creates a replacement driver,
-optionally calls `new.carry(old)` to preserve compatible delta totals, and feeds its current snapshot.
-The host handles descriptor replacement and removed properties for its transport.
-
-### Cover settings
-
-Which way a cover's position and commands run, and whether its motion is inferred, are the cover's settings, not
-`remap`: a curtain whose direction is wrong is fixed from its own configuration switches. `TuyaDriver(device, rules=rules, device_settings=True)` (a host with somewhere to keep them) offers each switch only where it changes something:
-
-| switch (property) | label | offered when the cover has | does |
-|---|---|---|---|
-| `cover_invert_position` | Invert current position | a reported position (`current_position`) | reads it the other way, 0..100; with one dp for position and target, writes it the other way too |
-| `cover_invert_set_position` | Invert target position | a target (`set_position`) that is another dp | writes the target, and reads it back, the other way |
-| `cover_invert_control` | Invert control | a command dp (`control`) and no target | swaps open and close (`FZ` / `ZZ` on the special command; a Boolean negated) |
-| `cover_position_from_target` | Use target as current position | two distinct position sources before selection | ON uses the target DP for display; OFF restores the original feedback DP; the switch stays available |
-| `cover_state_source` | Motion state source | a position or control DP, with no user converter owning this cover state | select `control` (control reports), `inferred` (position-based motion inference), or `none` (no motion generation); `control` requires a control DP |
-| `cover_invert_reported_motion` | Invert reported motion | control report mode | swaps only the reported opening/closing meaning, leaving stop unchanged |
-
-A cover with a target opens and closes by writing it (100 / 0), and its command dp only stops it: it has no *Invert
-control*. The switches are `binary`, the state source is `select`; all are `rw`, `category: config`, and show the settings in effect; a hazardous cover's
-(garage, gate, ...) are read only unless `allow_hazardous`. A later cover of the device (`control_2`, ...) has its own,
-named by its group (`control_2_cover_invert_position`).
-
-Writing a switch sends nothing to the device: the driver answers with the value and `SettingsChanged(block)`, with the device's whole settings block (e.g. `{"cover": {"invert_position":
-true}}`) for the host to keep (rustuya-local keeps it in `zz_settings.json` in its rules directory and reloads).
-
-The same settings are a `cover` block in any override file, where a product's block is the starting point for its
-devices and a device's (the switches write the device's) wins:
-
-| key | default | |
-|---|---|---|
-| `invert_position` | `false` | as the switch |
-| `invert_set_position` | `false` | as the switch |
-| `invert_control` | `false` | as the switch |
-| `state_source` | `inferred` with `device_settings`, else unset | `control`, `inferred` or `none`; unset gives the cover no `cover_state` |
-| `invert_reported_motion` | `false` | invert only direct control reports |
-| `settle` | `0` | seconds without a position report after which a move counts as stopped (0: never) |
-| `invert_tilt` | `false` | the tilt the other way |
-| `position_from_target` | `false` | the reported position dp is left out and the target read as the position |
-
-A later cover's keys go in an object under its group's name: `{"cover": {"invert_position": true, "control_2":
-{"invert_position": true}}}`. An inversion is laid over the dp's `remap` (a `remap.invert` there cancels it), and
-the swap is composed with the dp's `remap.alias`, so a device that says `on` / `off` / `pause` keeps its alias.
-
-The state source decides the cover's `cover_state` (open / closed / opening / closing / stopped):
-
-- `control` maps live open/close/stop reports directly to opening/closing/stopped, even without position feedback.
-  Boolean true/false and FZ/ZZ/STOP use the same control vocabulary as inference. The order on input is
-  `remap.alias`, `invert_control` (where applicable), then `invert_reported_motion`, which swaps only
-  opening/closing from control reports: it never changes sent commands, positions, inferred direction or endpoint
-  states. Live stop is always stopped. Position updates alone do not settle a directly reported movement, and this
-  mode has no settle timer.
-- `inferred`: a control word can start motion; subsequent position feedback corrects its direction, while an
-  independent target can be compared with the current position. A shared current/target DP is never compared
-  against itself. Without independent feedback, command direction and arrival cannot be verified; a target-only
-  update does not prove movement.
-- `none` generates only the resting state from the position, never movement.
-
-Retained snapshots/readbacks (`state`, and non-live passive reports) never start motion: their control may be the
-last command. A relevant snapshot reports only the position's resting state (closed at 0, open at 100, stopped
-between), or no state without position. Disconnect clears motion; reconnect/reload seeds only the resting state and
-waits for a live report. Duplicate live reports do not republish unchanged state.
-
-A declarative converter that defines a cover's `cover_state` owns it: that cover gets neither the built-in state
-producer nor its source/direction switches. Other covers of the device are independent.
-
-Settings remain saved while their switches are hidden: target inversion is dormant while current and target share a
-DP, and reported motion inversion is dormant outside control mode; switching back restores them. Current-position
-inversion follows the selected display source; when that source is also the target, it inverts both reads and
-writes. Property IDs and cover group IDs stay stable through source changes. A host reload cancels old timers and
-clears the old cover state before publishing a fresh snapshot; a bare sans-IO caller saves `SettingsChanged` and
-reloads, as for any switch.
-
-### Delta settings
-
-A delta dp (`report_type: sum`, a plug's `add_ele`) reports the energy used since its last report, not a meter
-reading: its property is the running total tuya2ildevice adds up (`series: counter`), so a repeated increment (`5`,
-then `5` again) adds twice. The total is published in the DP’s native unit with its `scale` applied: for
-`scale: 3` and unit `kWh`, a raw increment of `5` adds `0.005 kWh`. By default only an `active` push adds: a passive report is a readback of what the device
-already pushed. A device that never pushes it, and reports it passively only, needs passive reports counted too:
-
-| switch (property) | label | offered when the device has | does |
-|---|---|---|---|
-| `delta_accept_passive` | Count passive reports | a delta dp | a live passive report that carries the dp adds it as well, each one, even one that repeats the last value |
-
-It is the `delta` block's `accept_passive` (default `false`) in an override file, and saves as the cover switches do
-(`{"delta": {"accept_passive": true}}`). One report seen twice with the same Tuya `t` adds once; a readback the host
-asks for (a `get`, on a reconnect) carries no new increment but adds once more, so turn it on only for a device that
-does not push. A reload (an override or a setting changed) keeps the totals.
-
-Model-specific fixes use the `overrides` section of the same rules JSON, either in the shipped defaults or in a user file.
-
-## Converters
-
-A `converters.declarative` block derives properties from several dps with state and timers, and writes them back,
-as JSON programs in the rule language (see [the engine documentation](docs/rust-engine.md#json-converters)). Its
-properties may replace the tables' ones of the same name; one with `rw: true` (or a trigger) needs a `write` program.
-There are no code plugins: every converter is data and runs in the engine, so any binding drives it.
-
-A cover's own `cover_state` comes from its [cover settings](#cover-settings) (`state_source`), not from a
-converter. Timers come out as `SetTimer`; the host calls back with `driver.handle(now, Timer(name))`.
-
-## Rule files
-
-The wheel ships the [official rule pack](rules/README.md#the-official-rule-pack) in `rules/builtin/`,
-including [`00-default.json`](rules/builtin/00-default.json), additional official layers and their manifest.
-Hosts load official layers in filename order, then user files from their rule directory.
-User files contain partial rule objects, for example:
+This illustrative plug record has one writable Boolean feature:
 
 ```json
 {
-  "overrides": {
-    "my_product": {
-      "cover": {"invert_position": true}
+  "id": "example-device",
+  "name": "Desk plug",
+  "category": "cz",
+  "product_id": "example-product",
+  "product_name": "Smart plug",
+  "function": {
+    "switch_1": {"code": "switch_1", "type": "Boolean", "values": {}}
+  },
+  "status_range": {
+    "switch_1": {"code": "switch_1", "type": "Boolean", "values": {}}
+  },
+  "local_strategy": {
+    "1": {
+      "status_code": "switch_1",
+      "value_convert": "default",
+      "config_item": {"valueType": "Boolean", "valueDesc": {}}
     }
-  }
+  },
+  "status": {"switch_1": true}
 }
 ```
 
-The host reads rule files and chooses their order. Pass decoded layers to `merge_rules(layers, base=rules)`;
-objects merge recursively, arrays and scalars replace earlier values, `{"$delete": true}` removes a member,
-`{"$append": [...]}` extends an array, and `null` is literal. An invalid final rule set is rejected.
-There is no automatic rule loading.
+`status["switch_1"]` is a code-keyed initial value. A local packet such as `{"1": true}`
+is DP-ID-keyed and goes through the adapter. Do not feed a code-keyed SDK `status` map directly
+as a DPS message. The host must adapt cloud updates to the driver's DP-ID input contract.
+
+### SDK exports and tuyawizard exports
+
+The Sharing SDK populates `device.function` and `device.status_range` with definition objects,
+`device.local_strategy` with DP mappings, and `device.status` with code-keyed values.
+To export an SDK device, recursively convert its objects into dictionaries and serialize DP ID
+keys as strings. Passing the SDK's Python objects directly to `TuyaDriver` is not supported.
+
+[tuyawizard's exporter](https://github.com/3735943886/tuyawizard/blob/master/tuyawizard/wizard.py)
+already recursively converts SDK device objects and parses JSON object strings. Its saved device
+list can therefore be decoded and individual entries passed to the driver.
+
+A raw cloud API response is a different shape: specification responses contain `functions` and
+`status` arrays, which the SDK turns into the code-keyed `function` and `status_range` objects.
+Use the populated device export, or normalize the raw response to the structure above.
+
+### Missing schema and unclassified DPs
+
+Normal automatic classification needs feature definitions in `function` / `status_range`.
+The engine does not infer a device's function from a DP number and current value alone.
+Product quirks and `dp` overrides can supply missing definitions before classification.
+
+`expose_unused=True` exposes DPs that the normal rules did not claim as generic properties.
+It can use type/range metadata from `local_strategy.config_item` when feature definitions are missing.
+Integer, Enum and Boolean properties are writable only when defined in `function`;
+String, Raw, Json and Bitmap properties are read-only. This fallback does not invent semantic roles.
+
+## Python quick start
+
+```sh
+pip install tuya-interpreter
+```
+
+Supported wheels include the native engine and official rule files. Runtime dependencies do not
+include the Sharing SDK or tuyawizard: those are ways to obtain device metadata.
+Building from source requires Cargo and Rust 1.88 or newer.
+
+Official rules are bundled with the package. `load_builtin_rules()` reads the official layers
+in filename order and returns a merged, validated pack. It also works in editable source checkouts.
+The driver still takes `rules` explicitly and performs no rule-file I/O itself.
 
 ```python
-from tuya2ildevice import merge_rules
+from tuya_interpreter import Command, Connected, Message, TuyaDriver, load_builtin_rules
 
-custom = merge_rules(user_layers, base=rules)["rules"]
-driver = TuyaDriver(device, rules=custom)
+# device is a decoded device entry from the Sharing SDK or tuyawizard.
+driver = TuyaDriver(device, rules=load_builtin_rules())
+print(driver.descriptor)
+
+# For the example plug above; the host supplies actual time and packets.
+driver.handle(0.0, Connected())
+values = driver.handle(1.0, Message("active", {"1": True}))
+commands = driver.handle(2.0, Command("switch_1", "off"))
+# commands contains SendMessage("set", {"dps": {"1": False}}).
+# The host sends that payload to the device.
 ```
 
-## Host boundary
+To load a saved tuyawizard device list:
 
-A host keeps one `TuyaDriver` per device and supplies decoded inputs and an explicit `now`.
-The driver returns ildevice data, independent of MQTT, TCP or in-process consumption.
+```python
+import json
+from pathlib import Path
+
+from tuya_interpreter import TuyaDriver, load_builtin_rules
+
+devices = json.loads(Path("tuyadevices.json").read_text(encoding="utf-8"))
+driver = TuyaDriver(devices[0], rules=load_builtin_rules())
+```
+
+Use `descriptor_of(device, rules=rules)` when only a descriptor is needed.
+Keep one driver per device for live conversion, events, accumulated values and timers.
+
+## Interactive examples: one UI, different Tuya devices
+
+Two virtual devices expose the same switch and temperature properties through different DP IDs
+and scales. The CLI builds its controls from the ildevice descriptor; it has no hardcoded
+DP mapping, feature names or temperature conversion.
+
+```sh
+pip install tinytuya tuyamock
+python examples/python/device_cli.py --device a
+# After quitting, try the same UI with the other device:
+python examples/python/device_cli.py --device b
+```
+
+Both accept `set switch_1 true` and report `temp_current = 23.5 °C`. Device A sends DP 1
+and reports temperature as `235`; device B sends DP 101 and reports temperature as `2350`.
+The interpreter applies each schema's mapping and scale and rejects writes to the read-only sensor.
+
+Run from a source checkout with the interpreter installed. Use `--memory` for a demo without
+network dependencies. See [the example guide](examples/README.md#same-application-different-devices)
+for the profiles and [Rust/rustuya version](examples/README.md#rust-use-the-same-two-device-profiles).
+The original [minimal toggle CLI](examples/python/toggle_cli.py) remains available for connection checks
+and real-device use with private metadata.
+
+## Rules and supported device functions
+
+The [official rule pack](rules/README.md) contains category tables, entity specifications,
+units, mappings, feature definitions, codecs' configuration and product-specific quirks.
+The Rust engine supplies the interpreter and Tuya primitives. Changes expressible in the rule
+language, including new platforms, do not require rebuilding the engine.
+
+The converter assembles switch, button, select, number, sensor, binary sensor, event, light,
+cover, fan, siren, valve, humidifier, climate, alarm and vacuum functions into ildevice.
+Camera classification exists, but camera streams are outside the current IL assembly;
+`driver.state["assembly"]["unsupported"]` records unsupported plans. Doorbell events carry a kind without
+message text because the intermediate event contract has no text payload.
+
+Support is determined by category, available feature definitions and rules; there is no requirement
+to register every product separately. A matching category alone does not guarantee that every
+feature of a product can be interpreted.
+
+User rule layers merge recursively: arrays and scalars replace earlier values, `{"$delete": true}`
+removes a member, `{"$append": [...]}` extends an array, and `null` is literal.
+Load official layers in filename order, then user layers. Invalid final packs are rejected.
+See [rule composition and the official manifest](rules/README.md).
+
+```python
+from tuya_interpreter import load_builtin_rules, merge_rules
+
+custom_rules = merge_rules(user_layers, base=load_builtin_rules())["rules"]
+driver = TuyaDriver(device, rules=custom_rules)
+```
+
+Overrides can correct DP definitions and codes, aliases, categories, descriptor metadata and
+cover direction. Declarative converters add computed properties, commands, state and timers.
+See [device customization](docs/device-customization.md) for examples and all cover/delta settings,
+and [the engine documentation](docs/rust-engine.md#json-converters) for JSON programs.
+
+## Runtime and host responsibilities
 
 | Direction | Data |
-|---|---|
-| Tuya → driver | `Connected`, `Disconnected`, `Message(channel, flat_dps)` |
-| Driver → IL consumer | `Descriptor`, `Value`, `Absent`, `Event`, `Reject` |
-| IL consumer → driver | `Command(prop, value)` with a decoded value |
-| Driver → Tuya | `SendMessage("set", {"dps": ...})` |
+| --- | --- |
+| Host → driver | `Connected`, `Disconnected`, `Message(channel, flat_dps)`, `Timer(name)` |
+| Driver → ildevice consumer | `Descriptor`, `Value`, `Absent`, `Event`, `Reject` |
+| ildevice consumer → driver | `Command(prop, value)` |
+| Driver → Tuya transport | `SendMessage("set", {"dps": ...})` |
 | Driver → host | `SetTimer`, `CancelTimer`, `SettingsChanged` |
 
-The host executes timer requests and returns `Timer(name)`, persists settings, manages devices and snapshots,
-and implements its transport's framing, subscriptions, presence and retained-message policy.
-The driver never requests bridge registration or automatic `get` operations.
+The host unwraps transport envelopes into flat DP-ID maps, manages authentication, connections,
+subscriptions, retained-message policy and device routing, and sends returned commands.
+It supplies `now`, executes timer requests and persists settings, and initiates device reads when needed.
 
-Python construction requires `rules=...`; JavaScript uses `Driver.handle(now, input)` with the same JSON tags.
-Rule object declaration order is part of the driver's rule fingerprint: missing, invalid or changed packs are
-rejected, and changing rules requires a replacement driver. Neither binding reads rule files or a clock.
+Message channels have distinct semantics:
 
-## Layout
+- `active`: device push; updates values, fires events and accumulates increments.
+- `passive`: readback or live report; changed values are treated as live by converters,
+  but events do not fire. Delta accumulation requires `delta.accept_passive`.
+- `state`: snapshot; seeds values without treating retained commands as new movement or events.
 
-```
-rules/         user layers; builtin/ holds the bundled official rule pack and manifest
-rust/engine/   rule interpreter, Tuya primitives, explicit driver state, C ABI and the rule-pack schema
-src/tuya2ildevice/
-  native.py    ctypes transport, library loading and rule-pack cache
-  driver.py    TuyaDriver: one device's state JSON through the engine
-  io.py        inputs and outputs as data
-scripts/       generators (HA core tables, quirks, host units, Tuya categories) and build_rules.py, which folds
-               their output into the rule pack
-bindings/js/   a JavaScript binding over the WebAssembly build, with a smoke test
-```
+Numeric values use their published native units. For example, `500 mA` stays `500` with unit `mA`;
+a suggested display unit does not rescale the wire value. Commands are checked against the ildevice
+contract before conversion and rejected with `Reject` when invalid. Brightness conversions can
+introduce quantization. Covers use the device's position direction, configurable through cover settings;
+garage/gate controls are read-only unless `allow_hazardous=True`.
 
-The engine reproduces Home Assistant core's `tuya` integration exactly, including its quirks, and the golden tests
-pin it: `tests/golden/golden.json` is core's own entity snapshots for every fixture. For a new HA core / tuya-device-handlers release, review its changes against the canonical JSON rules
-and golden tests.
+Changing rules or overrides requires a replacement driver. `new.carry(old)` preserves compatible
+delta totals; the host then seeds its current snapshot and replaces the descriptor.
+With `device_settings=True`, setting writes return `SettingsChanged` for the host to save and reload.
 
-One deliberate exception: where Tuya's own category list (`scripts/data/tuya_categories.json`, generated by
-`scripts/gen_tuya_categories.py` from Tuya's standard instruction set page) disagrees with core, Tuya's list wins.
-The decisions are data too (`scripts/data/tuya_standard_rules.json`, applied by `scripts/standard.py` when
-`scripts/build_rules.py` builds the pack's platform tables): a `kg` ("Switch") category's
-switches are `switch`, not core's `outlet` plug icon; `cz` ("Socket") and `pc` ("Power strip") stay `outlet`. The golden
-tests apply the same file to core's expectations, and each such difference is a tagged `deviate` row in
-`docs/engine-spec.md` (P-28).
+## Rust, C ABI and WebAssembly
 
-A second one: a cover's position is not mirrored. The bridge shows the device's number and so does the IL; an
-installation inverts a device that counts the other way itself (its cover settings). The golden tests mirror core's
-expected position and position writes where core mirrored them (`core_reverses` in `tests/test_golden.py`).
+Rust hosts use `RulePack`, `Driver`, `DriverOptions`, `Input` and `Output` directly with driver
+state retained in memory. Python uses the JSON C ABI; `TUYA_ENGINE_LIBRARY` selects an alternative
+native library. JavaScript uses the same request protocol through WebAssembly.
+All bindings share the rule interpreter and Tuya semantics.
 
-## Tests
+See [native Rust API](docs/rust-engine.md#native-rust-api),
+[C ABI](docs/rust-engine.md#c-abi), [other languages](docs/rust-engine.md#another-language)
+and [local performance measurements](docs/performance.md).
 
-```
+## Development and validation
+
+```sh
 cargo test --locked --manifest-path rust/Cargo.toml
-pip install -e .[test] && python -m pytest
+pip install -e ".[test]"
+python -m pytest
 ```
 
-`tests/test_adapter.py` compares the raw-dps adapter with the Tuya SDK and is skipped unless `tuya-device-sharing-sdk==0.2.15`
-is installed. The spec repository (`../ildevice`, or `$ILDEVICE`) supplies the schema and the language-neutral vectors
-(commands, wire values, topics) read directly from its checkout; those tests are skipped if it is not there. `tests/chain/`
-compares every Home Assistant core tuya fixture with core's entity snapshots through an IL host's HA-free planner
-(needs that host's `ildevice.core` on `sys.path`; not collected without it).
+Classification, values, commands and quirks are checked against fixtures and golden data derived
+from Home Assistant's Tuya integration and the Sharing SDK. The pinned reference behavior and
+intentional differences are described in [the engine specification](docs/engine-spec.md).
+Tuya's standard category assignments take precedence over differing HA category assignments;
+cover positions keep the device's direction rather than HA's mirrored representation.
 
-## Release builds
+SDK adapter comparisons require `tuya-device-sharing-sdk==0.2.15` from the test extras.
+IL conformance tests use the specification checkout at `../ildevice` or `$ILDEVICE` and are skipped
+when absent. Chain tests require the IL host's `ildevice.core` planner and are not collected without it.
 
-[Release workflow](.github/workflows/release.yml) builds and tests 13 platform wheels:
+| Path | Contents |
+| --- | --- |
+| `rust/engine/` | Interpreter, driver, Tuya primitives, C ABI and rule-pack JSON Schema |
+| `src/tuya_interpreter/` | Python binding, inputs and outputs |
+| `bindings/js/` | JavaScript/WASM binding and smoke test |
+| `rules/builtin/` | Official rule layers and manifest |
+| `scripts/` | Rule generators, golden-data tooling and benchmarks |
+| `tests/` | Conversion, boundary, rule and conformance tests |
+
+`rust/engine/schema.json` validates the **rule-pack format**; it is separate from the Tuya device
+schema in `function` and `status_range`.
+
+## Releases
+
+The [release workflow](.github/workflows/release.yml) builds and tests 13 platform wheels:
 
 | Platform | Architectures |
 | --- | --- |
@@ -334,7 +316,11 @@ compares every Home Assistant core tuya fixture with core's entity snapshots thr
 | macOS | ARM64, x64 |
 | Windows | ARM64, x86, x64 |
 
-Push a `v*.*.*` version tag to publish the wheels and source archive to PyPI after
-all jobs pass. PRs affecting release inputs and manual workflow runs build artifacts
-without publishing. Configure PyPI Trusted Publishing for `release.yml` and the
-`pypi` environment. Users installing a supported wheel need no Rust toolchain.
+The planned first release uses tag `v0.1.0-alpha.1`: crate version `0.1.0-alpha.1` and
+PyPI version `0.1.0a1`, both named `tuya-interpreter`. The workflow checks that the tag matches
+Cargo and builds Python distributions with the corresponding version.
+
+A pushed version tag publishes to **crates.io and PyPI** after tests, all wheels, the source
+archive and crate packaging pass. PR/manual runs build artifacts without publishing.
+See [release setup](docs/releases.md) for PyPI Trusted Publishing, the crates.io first-registration
+token, subsequent OIDC publishing and release commands.

@@ -16,6 +16,7 @@ scheme = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'hatch_version
     ('0.4.0.dev1', 0, True, '0.4.0.dev2'),
     ('0.4.0.dev0', 3, False, '0.4.0.dev3'),
     ('0.4.0', 0, False, '0.4.0'),
+    ('0.1.0-alpha.1', 0, False, '0.1.0a1'),
     ('0.4.0', 3, False, '0.4.1.dev3'),
 ])
 def test_version_scheme(tag, distance, dirty, expected):

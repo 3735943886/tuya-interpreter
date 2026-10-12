@@ -4,7 +4,7 @@ import pytest
 from helpers import curtain, fn, strat
 from rule_data import rules
 
-from tuya2ildevice import (
+from tuya_interpreter import (
     Command,
     Connected,
     Disconnected,

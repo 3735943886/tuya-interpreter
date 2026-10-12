@@ -8,8 +8,8 @@ from helpers import curtain, fn, strat
 from rule_data import rules
 from test_driver import SCHEMA, needs_spec
 
-from tuya2ildevice import Command, Connected, Message, SendMessage, TuyaDriver, Value
-from tuya2ildevice.overrides import OverrideError
+from tuya_interpreter import Command, Connected, Message, SendMessage, TuyaDriver, Value
+from tuya_interpreter.overrides import OverrideError
 
 HERE = pathlib.Path(__file__).parent
 PRODUCTS = json.loads((HERE / "sample_products.json").read_text())      # cloud schemas of a window opener and curtains

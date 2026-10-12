@@ -1,0 +1,70 @@
+{
+  "id": "example-device-b",
+  "name": "Virtual switch + temperature B",
+  "category": "kg",
+  "product_id": "example-product-b",
+  "product_name": "Fictional switch with temperature sensor",
+  "sub": false,
+  "support_local": true,
+  "function": {
+    "switch_1": {
+      "code": "switch_1",
+      "type": "Boolean",
+      "values": {}
+    }
+  },
+  "status_range": {
+    "switch_1": {
+      "code": "switch_1",
+      "type": "Boolean",
+      "values": {}
+    },
+    "temp_current": {
+      "code": "temp_current",
+      "type": "Integer",
+      "values": {
+        "min": -2000,
+        "max": 8000,
+        "scale": 2,
+        "step": 1,
+        "unit": "℃"
+      }
+    }
+  },
+  "local_strategy": {
+    "101": {
+      "status_code": "switch_1",
+      "value_convert": "default",
+      "config_item": {
+        "statusFormat": {
+          "switch_1": "$"
+        },
+        "valueType": "Boolean",
+        "valueDesc": {},
+        "enumMappingMap": {}
+      }
+    },
+    "102": {
+      "status_code": "temp_current",
+      "value_convert": "default",
+      "config_item": {
+        "statusFormat": {
+          "temp_current": "$"
+        },
+        "valueType": "Integer",
+        "valueDesc": {
+          "min": -2000,
+          "max": 8000,
+          "scale": 2,
+          "step": 1,
+          "unit": "℃"
+        },
+        "enumMappingMap": {}
+      }
+    }
+  },
+  "status": {
+    "switch_1": false,
+    "temp_current": 2350
+  }
+}

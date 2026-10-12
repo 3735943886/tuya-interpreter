@@ -1,6 +1,6 @@
 """Compare native library revisions with identical Python/ctypes JSON transport costs.
 
-Usage: python scripts/benchmark_abi.py /path/to/libtuya_rule_engine.so [iterations]
+Usage: python scripts/benchmark_abi.py /path/to/libtuya_interpreter.so [iterations]
 """
 import ctypes
 import json

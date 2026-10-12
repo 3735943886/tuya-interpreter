@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tuya_rule_engine::{
+use tuya_interpreter::{
     Channel, Driver, DriverOptions, EngineError, Input, Output, RulePack, merge_rules,
 };
 

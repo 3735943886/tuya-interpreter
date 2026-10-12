@@ -1,13 +1,8 @@
 name: Release
 
-# Push a tag like `v0.1.0` to build and publish that version to PyPI.
-# `hatch_version.py` uses setuptools-scm: the package version is derived from this tag (the `v` prefix is
-# stripped automatically), so there is nothing to bump by hand before tagging.
-#
-# One-time setup on PyPI (no token needed -- this uses Trusted Publishing/OIDC):
-#   https://pypi.org/manage/project/tuya2ildevice/settings/publishing/ (after the first manual upload,
-#   or pre-register the project name) -> add a trusted publisher with:
-#     owner: 3735943886, repository: tuya2ildevice, workflow: release.yml, environment: pypi
+# First release tag: v0.1.0-alpha.1 (crate 0.1.0-alpha.1 / PyPI 0.1.0a1).
+# Cargo.toml must match the tag. PR/manual runs validate and build without publishing.
+# Setup: docs/releases.md (PyPI OIDC; crates.io token for first registration).
 
 on:
   push:
@@ -17,6 +12,10 @@ on:
       - ".github/workflows/release.yml"
       - "hatch_build.py"
       - "hatch_version.py"
+      - "scripts/release_version.py"
+      - "tests/test_release_version.py"
+      - "README.md"
+      - "examples/**"
       - "pyproject.toml"
       - "rust/**"
       - "rules/**"
@@ -28,8 +27,38 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      cargo_version: ${{ steps.version.outputs.cargo_version }}
+      python_version: ${{ steps.version.outputs.python_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          args=()
+          if [ "$RELEASE_REF_TYPE" = tag ]; then
+            args+=(--tag "$RELEASE_REF_NAME")
+          fi
+          python scripts/release_version.py "${args[@]}" --output "$GITHUB_OUTPUT"
+
   test:
+    needs: prepare
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.prepare.outputs.python_version }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -46,7 +75,7 @@ jobs:
 
   build:
     name: Wheel (${{ matrix.id }})
-    needs: test
+    needs: [prepare, test]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -132,11 +161,18 @@ jobs:
             target: aarch64-pc-windows-msvc
             libc: native
     env:
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.prepare.outputs.python_version }}
+      CIBW_ENVIRONMENT_LINUX: >-
+        TUYA_ENGINE_BUNDLED_LIBRARY=prebuilt/libtuya_interpreter.so
+        SETUPTOOLS_SCM_PRETEND_VERSION=${{ needs.prepare.outputs.python_version }}
       CIBW_BUILD: ${{ matrix.build }}
       CIBW_ARCHS: ${{ matrix.arch }}
       CIBW_ENVIRONMENT_MACOS: >-
         MACOSX_DEPLOYMENT_TARGET=11.0 TUYA_ENGINE_TARGET=${{ matrix.target }}
-      CIBW_ENVIRONMENT_WINDOWS: TUYA_ENGINE_TARGET=${{ matrix.target }}
+        SETUPTOOLS_SCM_PRETEND_VERSION=${{ needs.prepare.outputs.python_version }}
+      CIBW_ENVIRONMENT_WINDOWS: >-
+        TUYA_ENGINE_TARGET=${{ matrix.target }}
+        SETUPTOOLS_SCM_PRETEND_VERSION=${{ needs.prepare.outputs.python_version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -173,7 +209,7 @@ jobs:
           fi
           cargo zigbuild --locked --release --manifest-path rust/Cargo.toml --target "$build_target"
           mkdir -p prebuilt
-          cp "rust/target/$TUYA_BUILD_TARGET/release/libtuya_rule_engine.so" prebuilt/
+          cp "rust/target/$TUYA_BUILD_TARGET/release/libtuya_interpreter.so" prebuilt/
       - name: Package, repair and test installed wheel
         run: python -m cibuildwheel --output-dir dist
       - uses: actions/upload-artifact@v7
@@ -183,7 +219,9 @@ jobs:
           if-no-files-found: error
 
   sdist:
-    needs: test
+    needs: [prepare, test]
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.prepare.outputs.python_version }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -200,14 +238,27 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  publish:
+  crate:
+    needs: [prepare, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo package --locked --manifest-path rust/engine/Cargo.toml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: crate
+          path: rust/target/package/tuya-interpreter-*.crate
+          if-no-files-found: error
+
+  publish-pypi:
     # PRs and manual runs build artifacts only. Publishing requires a pushed version tag.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, sdist]
+    needs: [build, sdist, crate]
     runs-on: ubuntu-24.04
     environment:
       name: pypi
-      url: https://pypi.org/p/tuya2ildevice
+      url: https://pypi.org/p/tuya-interpreter
     permissions:
       id-token: write
     steps:
@@ -219,3 +270,29 @@ jobs:
       - run: pip install twine
       - run: python -m twine check --strict dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-crates:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, sdist, crate]
+    runs-on: ubuntu-24.04
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/tuya-interpreter
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # First registration uses the secret. After configuring trusted publishing,
+      # remove that secret to use short-lived OIDC tokens instead.
+      - name: Authenticate with crates.io Trusted Publishing
+        if: env.CARGO_REGISTRY_TOKEN == ''
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish Rust crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+        run: cargo publish --locked --manifest-path rust/engine/Cargo.toml

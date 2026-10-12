@@ -19,5 +19,5 @@ def version_scheme(version):
 __version__ = get_version(
     root=str(Path(__file__).resolve().parent),
     version_scheme=version_scheme,
-    parentdir_prefix_version='tuya2ildevice-',
+    parentdir_prefix_version='tuya-interpreter-',
 )

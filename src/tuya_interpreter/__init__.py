@@ -19,6 +19,7 @@ from .io import (
 )
 from .native import merge_rules
 from .overrides import OverrideError, merge_all
+from .rules import load_builtin_rules
 
 
 def preload() -> None:
@@ -50,6 +51,7 @@ __all__ = [
     "check_command",
     "default_env",
     "descriptor_of",
+    "load_builtin_rules",
     "merge_all",
     "merge_rules",
     "preload",

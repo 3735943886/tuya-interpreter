@@ -3,7 +3,7 @@ import pytest
 from helpers import curtain
 from rule_data import rules
 
-from tuya2ildevice import (
+from tuya_interpreter import (
     CancelTimer,
     Command,
     Connected,

@@ -3,8 +3,8 @@ takes effect with the same engine library, no rebuild."""
 import fixtures
 from rule_data import rules
 
-from tuya2ildevice import Command, Connected, Message, SendMessage, TuyaDriver, Value
-from tuya2ildevice.native import _call
+from tuya_interpreter import Command, Connected, Message, SendMessage, TuyaDriver, Value
+from tuya_interpreter.native import _call
 
 
 def layered(*layers):

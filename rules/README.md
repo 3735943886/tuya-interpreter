@@ -14,7 +14,10 @@ partial user files are validated after merging with the defaults. The engine sup
 
 The host reads the default pack and any user files, chooses their order, and passes decoded JSON to
 `merge_rules(layers, base=pack)`. Construct `TuyaDriver(device, rules=result["rules"])`.
-No directory discovery, rule-file reads or environment-selected rule layers occur in the library.
+The driver and Rust engine do not discover or read rule files. Python hosts can explicitly call
+`load_builtin_rules()` to read and validate the bundled official layers (including in editable
+source checkouts), then compose user layers with `merge_rules`. The helper does not load user
+files or remote updates.
 The default pack ships as an artifact for hosts to load; `builtin/00-default.json` has no special runtime priority.
 
 Objects merge recursively. Arrays and scalar values replace earlier values. `{"$delete": true}` deletes an object
@@ -65,7 +68,7 @@ If a separate file is easier to maintain, put it alongside the defaults, for exa
 - After adding, changing or removing a rule file, run `python scripts/build_pack.py` to update
   `builtin/manifest.json`. The manifest lists every official layer, including the defaults, with its SHA-256.
 - Manifest entries use `requires` / `until` to bound the host's compatible `LEVEL`.
-  New entries default to `requires: 4`, the rule-layer format used by tuya2ildevice 0.4.
+  New entries default to `requires: 4`, the rule-layer format used by tuya_interpreter 0.4.
 
 A host can also fetch the manifest and layers from `master` to update official rules between releases.
 It should keep fetched layers under `rules/builtin/` and apply user layers afterward.

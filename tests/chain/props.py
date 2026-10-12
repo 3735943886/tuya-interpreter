@@ -10,7 +10,7 @@ from ildevice.core.descriptor import parse_descriptor
 from ildevice.core.plan import plan_entities
 from rule_data import rules
 
-from tuya2ildevice import descriptor_of
+from tuya_interpreter import descriptor_of
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 import standard
