@@ -218,7 +218,7 @@ impl Driver {
 
     pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<Output>) {
         if value.is_null() {
-            if self.values.as_object_mut().unwrap().remove(prop).is_some() {
+            if remove(&mut self.values, prop).is_some() {
                 out.push(Output::Absent { prop: prop.into() });
             }
         } else if self.values.get(prop).is_none_or(|v| !eq(v, &value)) {
@@ -412,7 +412,7 @@ impl Driver {
                 if !dps.is_object() {
                     dps = json!({});
                 }
-                let t = dps.as_object_mut().unwrap().remove("t").unwrap_or(V::Null);
+                let t = remove(&mut dps, "t").unwrap_or(V::Null);
                 if truth(&dps) {
                     merge(&mut self.dps, &dps);
                     let new = self.config.adapter.read(&dps, rules);

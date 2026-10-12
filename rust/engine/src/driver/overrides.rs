@@ -54,11 +54,15 @@ pub(super) fn prepare(
                 return Err(format!("dp.{id}: no dp {id} to rename"));
             }
             for table in ["function", "status_range", "status"] {
-                if let Some(v) = d[table].as_object_mut().unwrap().remove(old) {
+                if let Some(v) = remove(&mut d[table], old) {
                     d[table][code] = v;
                 }
             }
-            for v in dpmap.as_object_mut().unwrap().values_mut() {
+            for v in dpmap
+                .as_object_mut()
+                .into_iter()
+                .flat_map(|m| m.values_mut())
+            {
                 if *v == old {
                     *v = json!(code);
                 }
@@ -91,9 +95,11 @@ pub(super) fn prepare(
     }
     for code in codes(&block["remove"]) {
         for table in ["function", "status_range", "status"] {
-            d[table].as_object_mut().unwrap().remove(&code);
+            remove(&mut d[table], &code);
         }
-        dpmap.as_object_mut().unwrap().retain(|_, v| *v != code);
+        if let Some(map) = dpmap.as_object_mut() {
+            map.retain(|_, v| *v != code);
+        }
     }
     Ok((d, block, dpmap, info))
 }
@@ -563,17 +569,14 @@ pub(super) fn patch_descriptor(
             return Err(format!("props.{prop}: no such property"));
         };
         if truth(&p["hide"]) {
-            Arc::make_mut(&mut a.descriptor)["props"]
-                .as_object_mut()
-                .unwrap()
-                .remove(&prop);
+            remove(&mut Arc::make_mut(&mut a.descriptor)["props"], &prop);
             a.bindings.shift_remove(&prop);
             continue;
         }
         for k in ["label", "class", "category", "unit", "series", "role"] {
             if let Some(v) = p.get(k) {
                 if v.is_null() {
-                    def.as_object_mut().unwrap().remove(k);
+                    remove(def, k);
                 } else if (k == "unit" || k == "series") && def["type"] != "number" {
                     return Err(format!("{k} only applies to number"));
                 } else {
@@ -585,9 +588,9 @@ pub(super) fn patch_descriptor(
             if def["type"] == "trigger" || def["type"] == "event" {
                 return Err("trigger/event cannot be made read only".into());
             }
-            def.as_object_mut().unwrap().remove("rw");
+            remove(def, "rw");
             if items(&rules["rw_roles"]).contains(&def["role"]) {
-                def.as_object_mut().unwrap().remove("role");
+                remove(def, "role");
             }
             if let Some(b) = a.bindings.get_mut(&prop) {
                 b.writable = false;
@@ -596,10 +599,7 @@ pub(super) fn patch_descriptor(
     }
     for (k, v) in obj(&block["device"]) {
         if v.is_null() {
-            Arc::make_mut(&mut a.descriptor)
-                .as_object_mut()
-                .unwrap()
-                .remove(&k);
+            remove(Arc::make_mut(&mut a.descriptor), &k);
         } else {
             Arc::make_mut(&mut a.descriptor)[&k] = v;
         }
@@ -614,10 +614,7 @@ pub(super) fn patch_descriptor(
     {
         groups.retain(|k, _| used.contains(&json!(k)));
         if groups.is_empty() {
-            Arc::make_mut(&mut a.descriptor)
-                .as_object_mut()
-                .unwrap()
-                .remove("groups");
+            remove(Arc::make_mut(&mut a.descriptor), "groups");
         }
     }
     Ok(())

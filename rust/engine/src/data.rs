@@ -38,6 +38,10 @@ pub fn arr(v: &V) -> Vec<V> {
 pub fn fields(v: &V) -> impl Iterator<Item = (&String, &V)> {
     v.as_object().into_iter().flat_map(|o| o.iter())
 }
+/// Remove an object member; a non-object has none.
+pub fn remove(v: &mut V, key: &str) -> Option<V> {
+    v.as_object_mut().and_then(|o| o.remove(key))
+}
 pub fn obj(v: &V) -> Obj {
     v.as_object().cloned().unwrap_or_default()
 }
