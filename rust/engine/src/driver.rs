@@ -101,25 +101,7 @@ impl Driver {
         }
         let (d, block, dpmap, info) =
             prepare(device, options, rules).map_err(EngineError::InvalidOverride)?;
-        let mut adapter = Adapter::new(&d, &dpmap, rules);
-        for (id, patch) in obj(&block["dp"]) {
-            let code = s(&patch["code"]).to_string();
-            if patch.get("type").is_none() {
-                if let Some(e) = adapter.entries.get_mut(&id) {
-                    e.0 = code;
-                }
-            } else if adapter.entries.get(&id).is_none_or(|e| e.0 != code) {
-                adapter
-                    .entries
-                    .insert(id, (code, "default".into(), json!({})));
-            }
-        }
-        let removed = codes(&block["remove"]);
-        adapter.entries.retain(|_, e| !removed.contains(&e.0));
-        for (code, r) in obj(&block["remap"]) {
-            adapter.remaps[&code] = r;
-            adapter.set_bounds(&code, &d);
-        }
+        let mut adapter = build_adapter(&d, &dpmap, &block, rules);
         let env = options
             .get("env")
             .cloned()
@@ -142,149 +124,25 @@ impl Driver {
         }
         let mut assembly = assemble(&d, &mut plans, &info, allow, rules)?;
         let mut covers = make_covers(&assembly, &plans, &block, settings, rules);
-        let mut selected = d.clone();
         let choices: Vec<_> = covers.iter().map(|c| c.position_choice).collect();
-        let mut dropped = false;
-        for c in &covers {
-            if truth(&c.settings["position_from_target"])
-                && c.separate()
-                && let Some(r) = &c.cur
-            {
-                for t in ["function", "status_range", "status"] {
-                    selected[t].as_object_mut().unwrap().remove(&r.code);
-                }
-                dropped = true;
+        // A cover that takes its position from the target is classified again without its
+        // separate current-position DP.
+        let selected = match without_target_positions(&d, &covers) {
+            Some(selected) => {
+                plans = entity::classify(&selected, &env, rules, &V::Null)?;
+                assembly = assemble(&selected, &mut plans, &info, allow, rules)?;
+                covers = make_covers(&assembly, &plans, &block, settings, rules);
+                selected
             }
-        }
-        if dropped {
-            plans = entity::classify(&selected, &env, rules, &V::Null)?;
-            assembly = assemble(&selected, &mut plans, &info, allow, rules)?;
-            covers = make_covers(&assembly, &plans, &block, settings, rules);
-        }
+            None => d.clone(),
+        };
         for (i, c) in covers.iter_mut().enumerate() {
             c.position_choice = choices.get(i).copied().unwrap_or(false);
-            for (k, r) in [
-                ("invert_position", c.cur.as_ref()),
-                (
-                    "invert_set_position",
-                    if c.separate() { c.setp.as_ref() } else { None },
-                ),
-                ("invert_tilt", c.tilt.as_ref()),
-            ] {
-                if truth(&c.settings[k])
-                    && let Some(r) = r
-                {
-                    adapter.invert(&r.code, &d);
-                }
-            }
-            if truth(&c.settings["invert_control"])
-                && c.applies("invert_control")
-                && let Some(r) = &c.ins
-            {
-                if r.kind == DpKind::Boolean {
-                    adapter.invert(&r.code, &d);
-                } else {
-                    let words = cover_words(r, &c.words, rules);
-                    let swaps = if r.range().contains(&words["open"])
-                        && r.range().contains(&words["close"])
-                    {
-                        json!({s(&words["open"]):words["close"],s(&words["close"]):words["open"]})
-                    } else {
-                        json!({})
-                    };
-                    let old = obj(&adapter.remaps[&r.code]["alias"]);
-                    let mut alias = json!({});
-                    let mut devs: Vec<String> = old.keys().cloned().collect();
-                    for k in obj(&swaps).keys() {
-                        if !old.values().any(|v| *v == k.as_str()) {
-                            devs.push(k.clone());
-                        }
-                    }
-                    for dev in devs {
-                        let std = old.get(&dev).cloned().unwrap_or(json!(dev));
-                        let new = swaps.get(s(&std)).cloned().unwrap_or(std);
-                        if new != dev {
-                            alias[&dev] = new;
-                        }
-                    }
-                    if adapter.remaps.get(&r.code).is_none() {
-                        adapter.remaps[&r.code] = json!({});
-                    }
-                    adapter.remaps[&r.code]["alias"] = alias;
-                }
-            }
+            invert_cover(c, &mut adapter, &d, rules);
         }
-        for (k, v) in obj(&block["cover"]) {
-            if v.is_object()
-                && !covers
-                    .iter()
-                    .any(|c| c.group.as_deref() == Some(k.as_str()))
-            {
-                return Err(EngineError::InvalidOverride(format!(
-                    "cover.{k}: the device has no cover in a group of that name"
-                )));
-            }
-        }
-        let mut taken = vec![];
-        let mut machines = vec![];
-        if let Some(cfg) = block["converters"].get("declarative") {
-            let index = machines.len();
-            for (prop, def) in obj(&cfg["props"]) {
-                if prop == "available" || taken.contains(&prop) {
-                    return Err(EngineError::InvalidOverride(
-                        "converter property taken".into(),
-                    ));
-                }
-                taken.push(prop.clone());
-                Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def.clone();
-                let writable = truth(&def["rw"]) || def["type"] == "trigger";
-                if writable && cfg["write"].get(&prop).is_none() {
-                    return Err(EngineError::InvalidOverride(
-                        "writable declarative property needs write program".into(),
-                    ));
-                }
-                assembly
-                    .bindings
-                    .insert(prop, Binding::new(Source::Machine { index }, writable));
-            }
-            machines.push(Machine::new(cfg));
-        }
-        let mut motions = vec![];
-        let motion_taken = taken.clone();
-        for c in &covers {
-            let prop = format!("{}cover_state", c.prefix);
-            if taken.contains(&prop) {
-                continue;
-            }
-            let Some(source) = c.source().filter(|source| match *source {
-                StateSource::Control => c.ins.is_some(),
-                StateSource::Inferred => c.can_infer(),
-                StateSource::None => c.cur.is_some(),
-            }) else {
-                continue;
-            };
-            let words = c
-                .ins
-                .as_ref()
-                .map(|r| cover_words(r, &c.words, rules))
-                .unwrap_or_else(|| rules["maps"][s(&c.words[0])].clone());
-            motions.push(Motion {
-                prop,
-                group: c.group.clone(),
-                command: c.ins.as_ref().map(|r| r.code.clone()),
-                target_code: if c.separate() {
-                    c.setp.as_ref().map(|r| r.code.clone())
-                } else {
-                    None
-                },
-                position: c.cur.as_ref().map(|r| r.code.clone()),
-                words,
-                settle: n(&c.settings["settle"]),
-                mode: source,
-                invert_report: truth(&c.settings["invert_reported_motion"]),
-                ..Motion::default()
-            });
-        }
+        check_cover_groups(&block, &covers)?;
+        let (machines, taken) = declarative(&mut assembly, &block)?;
+        let motions = cover_motions(&covers, &taken, rules);
         for motion in &motions {
             let mut def = rules["motion_property"].clone();
             if let Some(g) = &motion.group {
@@ -295,59 +153,12 @@ impl Driver {
                 .bindings
                 .insert(motion.prop.clone(), Binding::new(Source::Motion, false));
         }
-        let delta = if assembly.bindings.values().any(|b| {
-            b.plan()
-                .and_then(|i| plans.get(i))
-                .is_some_and(|p| p.slot_kind == Some(SlotKind::Delta))
-        }) {
-            let mut cfg = json!({"accept_passive":false});
-            merge(&mut cfg, &block["delta"]);
-            Some(cfg)
+        let delta = delta_config(&assembly, &plans, &block);
+        let mut switches = if settings {
+            config_switches(&mut covers, &mut assembly, delta.is_some(), &taken, rules)
         } else {
-            None
+            IndexMap::new()
         };
-        let mut switches = IndexMap::new();
-        if settings {
-            for (i, c) in covers.iter_mut().enumerate() {
-                for (k, label) in obj(&rules["cover_switches"]) {
-                    if !c.applies(&k)
-                        || ["state_source", "invert_reported_motion"].contains(&k.as_str())
-                            && motion_taken.contains(&format!("{}cover_state", c.prefix))
-                    {
-                        continue;
-                    }
-                    let prop = format!("{}cover_{k}", c.prefix);
-                    if assembly.descriptor["props"].get(&prop).is_some() {
-                        continue;
-                    }
-                    let mut def = json!({"type":"binary","category":"config","label":label});
-                    if !c.hazardous {
-                        def["rw"] = json!(true);
-                    }
-                    if k == "state_source" {
-                        def["type"] = json!("select");
-                        def["options"] = if c.ins.is_some() {
-                            json!(["control", "inferred", "none"])
-                        } else {
-                            json!(["inferred", "none"])
-                        };
-                    }
-                    if let Some(g) = &c.group {
-                        def["group"] = json!(g);
-                    }
-                    Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def;
-                    c.switches.push(k.clone());
-                    switches.insert(prop, (i as i64, k));
-                }
-            }
-            if delta.is_some() {
-                let prop = "delta_accept_passive";
-                if assembly.descriptor["props"].get(prop).is_none() {
-                    Arc::make_mut(&mut assembly.descriptor)["props"][prop] = json!({"type":"binary","rw":true,"category":"config","label":"Count passive reports"});
-                    switches.insert(prop.into(), (-1, "accept_passive".into()));
-                }
-            }
-        }
         patch_descriptor(&mut assembly, &mut plans, &block, &selected, rules)
             .map_err(EngineError::InvalidOverride)?;
         switches.retain(|k, _| assembly.descriptor["props"].get(k).is_some());
@@ -814,4 +625,261 @@ fn reject(prop: &str, code: RejectCode, reason: &str) -> Output {
         code,
         reason: reason.into(),
     }
+}
+
+/// The DP adapter for a prepared device, with the override block's DP definitions, removals and
+/// remaps applied.
+fn build_adapter(d: &V, dpmap: &V, block: &V, rules: &V) -> Adapter {
+    let mut adapter = Adapter::new(d, dpmap, rules);
+    for (id, patch) in obj(&block["dp"]) {
+        let code = s(&patch["code"]).to_string();
+        if patch.get("type").is_none() {
+            if let Some(e) = adapter.entries.get_mut(&id) {
+                e.0 = code;
+            }
+        } else if adapter.entries.get(&id).is_none_or(|e| e.0 != code) {
+            adapter
+                .entries
+                .insert(id, (code, "default".into(), json!({})));
+        }
+    }
+    let removed = codes(&block["remove"]);
+    adapter.entries.retain(|_, e| !removed.contains(&e.0));
+    for (code, r) in obj(&block["remap"]) {
+        adapter.remaps[&code] = r;
+        adapter.set_bounds(&code, d);
+    }
+    adapter
+}
+
+/// The device without the current-position DPs of covers set to `position_from_target`, or
+/// `None` when no cover drops one.
+fn without_target_positions(d: &V, covers: &[Cover]) -> Option<V> {
+    let mut selected = d.clone();
+    let mut dropped = false;
+    for c in covers {
+        if truth(&c.settings["position_from_target"])
+            && c.separate()
+            && let Some(r) = &c.cur
+        {
+            for t in ["function", "status_range", "status"] {
+                if let Some(table) = selected[t].as_object_mut() {
+                    table.remove(&r.code);
+                }
+            }
+            dropped = true;
+        }
+    }
+    dropped.then_some(selected)
+}
+
+/// Apply a cover's inversion settings to the adapter's DP conversions.
+fn invert_cover(c: &Cover, adapter: &mut Adapter, d: &V, rules: &V) {
+    for (k, r) in [
+        ("invert_position", c.cur.as_ref()),
+        (
+            "invert_set_position",
+            if c.separate() { c.setp.as_ref() } else { None },
+        ),
+        ("invert_tilt", c.tilt.as_ref()),
+    ] {
+        if truth(&c.settings[k])
+            && let Some(r) = r
+        {
+            adapter.invert(&r.code, d);
+        }
+    }
+    if truth(&c.settings["invert_control"])
+        && c.applies("invert_control")
+        && let Some(r) = &c.ins
+    {
+        if r.kind == DpKind::Boolean {
+            adapter.invert(&r.code, d);
+        } else {
+            swap_control_words(adapter, r, &cover_words(r, &c.words, rules));
+        }
+    }
+}
+
+/// Swap an enum control's open and close words in its alias map, keeping existing aliases.
+fn swap_control_words(adapter: &mut Adapter, r: &Role, words: &V) {
+    let swaps = if r.range().contains(&words["open"]) && r.range().contains(&words["close"]) {
+        json!({s(&words["open"]):words["close"],s(&words["close"]):words["open"]})
+    } else {
+        json!({})
+    };
+    let old = obj(&adapter.remaps[&r.code]["alias"]);
+    let mut alias = json!({});
+    let mut devs: Vec<String> = old.keys().cloned().collect();
+    for k in obj(&swaps).keys() {
+        if !old.values().any(|v| *v == k.as_str()) {
+            devs.push(k.clone());
+        }
+    }
+    for dev in devs {
+        let std = old.get(&dev).cloned().unwrap_or(json!(dev));
+        let new = swaps.get(s(&std)).cloned().unwrap_or(std);
+        if new != dev {
+            alias[&dev] = new;
+        }
+    }
+    if adapter.remaps.get(&r.code).is_none() {
+        adapter.remaps[&r.code] = json!({});
+    }
+    adapter.remaps[&r.code]["alias"] = alias;
+}
+
+/// Every cover settings group in the override block must name a cover of the device.
+fn check_cover_groups(block: &V, covers: &[Cover]) -> Result<(), EngineError> {
+    for (k, v) in obj(&block["cover"]) {
+        if v.is_object()
+            && !covers
+                .iter()
+                .any(|c| c.group.as_deref() == Some(k.as_str()))
+        {
+            return Err(EngineError::InvalidOverride(format!(
+                "cover.{k}: the device has no cover in a group of that name"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Bind the declarative converter's properties; returns its machines and the properties it takes.
+fn declarative(
+    assembly: &mut Assembly,
+    block: &V,
+) -> Result<(Vec<Machine>, Vec<String>), EngineError> {
+    let mut taken = vec![];
+    let mut machines = vec![];
+    if let Some(cfg) = block["converters"].get("declarative") {
+        let index = machines.len();
+        for (prop, def) in obj(&cfg["props"]) {
+            if prop == "available" || taken.contains(&prop) {
+                return Err(EngineError::InvalidOverride(
+                    "converter property taken".into(),
+                ));
+            }
+            taken.push(prop.clone());
+            Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def.clone();
+            let writable = truth(&def["rw"]) || def["type"] == "trigger";
+            if writable && cfg["write"].get(&prop).is_none() {
+                return Err(EngineError::InvalidOverride(
+                    "writable declarative property needs write program".into(),
+                ));
+            }
+            assembly
+                .bindings
+                .insert(prop, Binding::new(Source::Machine { index }, writable));
+        }
+        machines.push(Machine::new(cfg));
+    }
+    Ok((machines, taken))
+}
+
+/// A `cover_state` motion for each cover with a usable state source and no converter property
+/// of that name.
+fn cover_motions(covers: &[Cover], taken: &[String], rules: &V) -> Vec<Motion> {
+    let mut motions = vec![];
+    for c in covers {
+        let prop = format!("{}cover_state", c.prefix);
+        if taken.contains(&prop) {
+            continue;
+        }
+        let Some(source) = c.source().filter(|source| match *source {
+            StateSource::Control => c.ins.is_some(),
+            StateSource::Inferred => c.can_infer(),
+            StateSource::None => c.cur.is_some(),
+        }) else {
+            continue;
+        };
+        let words = c
+            .ins
+            .as_ref()
+            .map(|r| cover_words(r, &c.words, rules))
+            .unwrap_or_else(|| rules["maps"][s(&c.words[0])].clone());
+        motions.push(Motion {
+            prop,
+            group: c.group.clone(),
+            command: c.ins.as_ref().map(|r| r.code.clone()),
+            target_code: if c.separate() {
+                c.setp.as_ref().map(|r| r.code.clone())
+            } else {
+                None
+            },
+            position: c.cur.as_ref().map(|r| r.code.clone()),
+            words,
+            settle: n(&c.settings["settle"]),
+            mode: source,
+            invert_report: truth(&c.settings["invert_reported_motion"]),
+            ..Motion::default()
+        });
+    }
+    motions
+}
+
+/// Delta settings when any bound property accumulates increments.
+fn delta_config(assembly: &Assembly, plans: &[Plan], block: &V) -> Option<V> {
+    let accumulates = assembly.bindings.values().any(|b| {
+        b.plan()
+            .and_then(|i| plans.get(i))
+            .is_some_and(|p| p.slot_kind == Some(SlotKind::Delta))
+    });
+    accumulates.then(|| {
+        let mut cfg = json!({"accept_passive":false});
+        merge(&mut cfg, &block["delta"]);
+        cfg
+    })
+}
+
+/// Device-setting properties for cover and delta settings, keyed by property name and mapped
+/// to the cover index (`-1` for delta) and setting name.
+fn config_switches(
+    covers: &mut [Cover],
+    assembly: &mut Assembly,
+    delta: bool,
+    taken: &[String],
+    rules: &V,
+) -> IndexMap<String, (i64, String)> {
+    let mut switches = IndexMap::new();
+    for (i, c) in covers.iter_mut().enumerate() {
+        for (k, label) in obj(&rules["cover_switches"]) {
+            if !c.applies(&k)
+                || ["state_source", "invert_reported_motion"].contains(&k.as_str())
+                    && taken.contains(&format!("{}cover_state", c.prefix))
+            {
+                continue;
+            }
+            let prop = format!("{}cover_{k}", c.prefix);
+            if assembly.descriptor["props"].get(&prop).is_some() {
+                continue;
+            }
+            let mut def = json!({"type":"binary","category":"config","label":label});
+            if !c.hazardous {
+                def["rw"] = json!(true);
+            }
+            if k == "state_source" {
+                def["type"] = json!("select");
+                def["options"] = if c.ins.is_some() {
+                    json!(["control", "inferred", "none"])
+                } else {
+                    json!(["inferred", "none"])
+                };
+            }
+            if let Some(g) = &c.group {
+                def["group"] = json!(g);
+            }
+            Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def;
+            c.switches.push(k.clone());
+            switches.insert(prop, (i as i64, k));
+        }
+    }
+    if delta {
+        let prop = "delta_accept_passive";
+        if assembly.descriptor["props"].get(prop).is_none() {
+            Arc::make_mut(&mut assembly.descriptor)["props"][prop] = json!({"type":"binary","rw":true,"category":"config","label":"Count passive reports"});
+            switches.insert(prop.into(), (-1, "accept_passive".into()));
+        }
+    }
+    switches
 }

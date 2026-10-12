@@ -376,3 +376,13 @@ def test_after_preload_driving_a_device_reads_no_file(monkeypatch):
     monkeypatch.setattr(pathlib.Path, "open", no_io)
     for rec in records:
         TuyaDriver(rec, allow_hazardous=True, rules=rules())
+
+
+def test_boolean_values_are_canonical_booleans():
+    # Python equality accepts 0 and 1 for a Boolean DP; the published value is a real boolean.
+    d = TuyaDriver(light(), rules=rules())
+    d.handle(0, Connected())
+    assert Value("switch_led", False) in d.handle(1, Message("active", {"20": 0}))
+    assert d.handle(2, Message("active", {"20": False})) == []
+    assert d.handle(3, Message("active", {"20": 1})) == [Value("switch_led", True)]
+    assert d.handle(4, Message("active", {"20": "on"})) == [Absent("switch_led")]
