@@ -233,6 +233,12 @@ Existing drivers still verify the content fingerprint if the ID is reinstalled.
 
 | `op` | Request fields | Result |
 | --- | --- | --- |
+| `open` | `device`, `options` | `{handle}` of a driver kept in engine memory |
+| `drive` | `handle`, `input`, `now` | `{outputs, linked, synced, timers}` |
+| `view` | `handle` | `{descriptor, dps, linked, synced, timers}` |
+| `snapshot` | `handle` | driver state, as `create` returns it |
+| `carry_handle` | `handle`, `old` (a handle) | `true`; compatible delta totals are taken over |
+| `close` | `handle` | whether the driver was open |
 | `create` | `device`, `options` | `{driver}` |
 | `handle` | `driver`, `input`, `now` | `{driver, outputs}` |
 | `carry` | `driver`, `old` | `{driver}` with compatible delta totals |
@@ -242,7 +248,12 @@ Existing drivers still verify the content fingerprint if the ID is reinstalled.
 | `install_rules`, `merge_rules` | see above | |
 | `classify`, `read`, `write`, `on_update`, `unused`, `quirk_schema`, `status_quirk`, `device_info`, `adapter_*`, `strategy_read`, `strategy_write` | plan / schema inputs | introspection for golden tests |
 
-Driver state is explicit JSON: DP values, published values, delta totals, cover motion, converter state, settings
+Engine-held drivers (`open` to `close`) keep their state in the library, so each message carries only its input
+and outputs; this is what the Python and JavaScript bindings use. A failed `drive` leaves the driver unchanged.
+Handles are process-local and are not reused; close each driver when its device goes away. `drive` requests for
+different handles may run concurrently.
+
+With `create` and `handle`, driver state is explicit JSON instead: DP values, published values, delta totals, cover motion, converter state, settings
 and timer names. No sockets or clocks are read; serialize the returned driver to continue in another process with
 the same engine and pack. Internal driver state is version-specific, not a durable storage format.
 
@@ -252,14 +263,15 @@ Input/output tags are snake_case: `connected`, `disconnected`, `message`, `comma
 
 ## Another language
 
-A binding loads the library or WebAssembly module, registers decoded rules, and keeps one driver JSON per device.
-Call `create`, then `handle` with `input` and an explicit `now`. Inputs and outputs follow the IL driver contract;
+A binding loads the library or WebAssembly module, registers decoded rules, and keeps one driver handle per device.
+Call `open`, then `drive` with `input` and an explicit `now`, and `close` when the device goes away. Bindings
+that need to move state between processes can use `create` and `handle` with explicit driver JSON instead. Inputs and outputs follow the IL driver contract;
 there are no MQTT topics, payload encoders, producer actions, or bridge orchestration operations.
 `send_message` carries Tuya set DPS as data; the host sends them through its chosen transport.
 The host also owns the device registry, clocks, timers, rule files, settings storage and transport adapters.
 
 [`bindings/js/engine.mjs`](../bindings/js/engine.mjs) provides `Driver.handle(now, input)`,
-`describe(now, seed)`, `carry(old)` and `settingsBlock()` over WebAssembly, without reading a clock.
+`describe(now, seed)`, `carry(old)`, `settingsBlock()` and `close()` over WebAssembly, without reading a clock.
 `node bindings/js/smoke.mjs` verifies both directions using host-loaded rules and explicit time.
 
 ## Build, packaging and validation

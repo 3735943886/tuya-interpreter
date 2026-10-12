@@ -71,3 +71,23 @@ def test_canonical_rule_pack_validates_against_its_schema():
     import jsonschema
     schema = json.loads((Path(__file__).resolve().parents[1] / 'rust/engine/schema.json').read_text())
     jsonschema.validate(rules(), schema)
+
+
+def test_engine_held_drivers_are_released():
+    import gc
+
+    from tuya_interpreter.native import _call
+    d = TuyaDriver(curtain(), rules=rules())
+    handle = d._handle
+    d.handle(0, Connected())
+    assert d.linked and _call({'op': 'view', 'handle': handle})['linked']
+    d.close()
+    d.close()                                   # idempotent
+    with pytest.raises(ValueError, match='no open driver'):
+        d.handle(1, Connected())
+    collected = TuyaDriver(curtain(), rules=rules())
+    handle = collected._handle
+    del collected
+    gc.collect()
+    with pytest.raises(ValueError, match='no open driver'):
+        _call({'op': 'view', 'handle': handle})

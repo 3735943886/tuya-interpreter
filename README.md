@@ -278,8 +278,9 @@ With `device_settings=True`, setting writes return `SettingsChanged` for the hos
 ## Rust, C ABI and WebAssembly
 
 Rust hosts use `RulePack`, `Driver`, `DriverOptions`, `Input` and `Output` directly with driver
-state retained in memory. Python uses the JSON C ABI; `TUYA_ENGINE_LIBRARY` selects an alternative
-native library. JavaScript uses the same request protocol through WebAssembly.
+state retained in memory. Python uses the JSON C ABI with engine-held drivers: each message sends
+only its input and outputs. `driver.close()` releases a driver early; otherwise it is released when
+collected. `TUYA_ENGINE_LIBRARY` selects an alternative native library. JavaScript uses the same request protocol through WebAssembly.
 All bindings share the rule interpreter and Tuya semantics.
 
 See [native Rust API](docs/rust-engine.md#native-rust-api),

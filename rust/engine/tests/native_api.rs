@@ -175,3 +175,74 @@ fn invalid_snapshots_and_recursive_inputs_return_errors() {
     ));
     assert_eq!(driver.snapshot(), before);
 }
+
+#[test]
+fn engine_held_drivers_keep_state_between_requests() {
+    let call = |request: Value| -> Value {
+        serde_json::from_str(&tuya_interpreter::evaluate_json(&request.to_string())).unwrap()
+    };
+    let rules: Value =
+        serde_json::from_str(include_str!("../../../rules/builtin/00-default.json")).unwrap();
+    let opened = |rules: &Value| {
+        call(json!({"op":"open","rules":rules,"device":device(),"options":{"dpmap":{"1":"switch_1"}}}))
+            ["value"]["handle"]
+            .as_u64()
+            .unwrap()
+    };
+    let handle = opened(&rules);
+    let drive = |handle: u64, now: Value, input: Value| {
+        call(json!({"op":"drive","handle":handle,"now":now,"input":input}))
+    };
+    let linked = drive(handle, json!(0), json!({"type":"connected"}));
+    assert_eq!(linked["value"]["linked"], true);
+    let on = drive(
+        handle,
+        json!(1),
+        json!({"type":"message","channel":"active","json":{"1":true}}),
+    );
+    assert!(
+        on["value"]["outputs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"type":"value","prop":"switch_1","value":true}))
+    );
+    // The same message again changes nothing: the value was kept in the engine.
+    let again = drive(
+        handle,
+        json!(2),
+        json!({"type":"message","channel":"active","json":{"1":true}}),
+    );
+    assert_eq!(again["value"]["outputs"], json!([]));
+    let view = call(json!({"op":"view","handle":handle}))["value"].clone();
+    assert_eq!(view["dps"], json!({"1":true}));
+    assert_eq!(view["descriptor"]["props"]["switch_1"]["type"], "binary");
+    let snapshot = call(json!({"op":"snapshot","handle":handle}))["value"].clone();
+    assert_eq!(snapshot["values"]["switch_1"], true);
+
+    // A failed input leaves the driver unchanged.
+    assert_eq!(
+        drive(handle, json!(null), json!({"type":"connected"}))["ok"],
+        false
+    );
+    assert_eq!(
+        call(json!({"op":"snapshot","handle":handle}))["value"],
+        snapshot
+    );
+
+    let other = opened(&rules);
+    assert_eq!(
+        call(json!({"op":"carry_handle","handle":other,"old":handle}))["value"],
+        true
+    );
+    assert_eq!(
+        call(json!({"op":"carry_handle","handle":handle,"old":handle}))["value"],
+        true
+    );
+    for h in [handle, other] {
+        assert_eq!(call(json!({"op":"close","handle":h}))["value"], true);
+        let closed = drive(h, json!(3), json!({"type":"connected"}));
+        assert_eq!(closed["ok"], false);
+        assert!(closed["error"].as_str().unwrap().contains("no open driver"));
+    }
+    assert_eq!(call(json!({"op":"view","handle":"x"}))["ok"], false);
+}

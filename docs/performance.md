@@ -6,16 +6,18 @@ Each result is the median of five rounds after 100 warm-up messages. Constructio
 rule installation and the initial state packet are excluded. Messages alternate DP 1
 between `true` and `false` through the active channel.
 
-## Existing Python transport
+## Python transport
 
-`scripts/benchmark_abi.py <absolute-library-path> 2000` uses the same Python,
-ctypes and JSON transport for both revisions. The baseline is commit `8183033`;
-the updated library is built from the accompanying working-tree changes.
+Measured on 2026-10-12. `scripts/benchmark_abi.py <absolute-library-path> 2000` drives the
+same messages through Python, ctypes and the JSON ABI in both ways a host can hold a driver:
+explicit-state requests (`create`/`handle`) send and return the complete driver snapshot on each
+message; engine-held drivers (`open`/`drive`), which `TuyaDriver` uses, send only the input and
+outputs.
 
-| Case | Baseline µs/message | Updated µs/message | Time reduction |
+| Case | `handle` µs/message | `drive` µs/message | Speedup |
 | --- | ---: | ---: | ---: |
-| Single switch | 146.86 | 139.94 | 4.7% |
-| `dj_0gyaslysqfp4gfis` light | 1,412.81 | 933.23 | 33.9% |
+| Single switch | 143.63 | 30.36 | 4.7× |
+| `dj_0gyaslysqfp4gfis` light | 940.47 | 164.74 | 5.7× |
 
 ## Direct Rust calls
 

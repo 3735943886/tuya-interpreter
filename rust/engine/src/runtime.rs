@@ -107,6 +107,7 @@ impl Default for DriverOptions {
     }
 }
 
+#[derive(Clone)]
 pub struct Driver {
     state: crate::driver::Driver,
     rules: Arc<RulePack>,

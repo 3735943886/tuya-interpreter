@@ -70,6 +70,14 @@ def unregister_rules(identifier):
     return _call({'op': 'remove_rules', 'rules_id': identifier})
 
 
+def close_driver(handle):
+    """Release a driver opened in the engine. Safe to call more than once."""
+    try:
+        _call({'op': 'close', 'handle': handle})
+    except ValueError:
+        pass
+
+
 def call(op, **payload):
     """Evaluate an operation using explicit request data; never load rules implicitly."""
     return _call({'op': op, **payload})

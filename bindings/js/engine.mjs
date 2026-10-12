@@ -50,24 +50,50 @@ export class Engine {
   }
 }
 
-/** One transport-independent Tuya device. Rules and time are supplied by the host. */
+/** Releases engine-held drivers that were collected without `close()`. */
+const released = new FinalizationRegistry(({ engine, handle }) => {
+  try {
+    engine.call({ op: "close", handle });
+  } catch {
+    // The engine instance may already be gone.
+  }
+});
+
+/**
+ * One transport-independent Tuya device. Rules and time are supplied by the host.
+ * Its state stays in the engine; each input sends only itself and its outputs.
+ */
 export class Driver {
   constructor(engine, rulesId, device, options = {}) {
     Object.assign(this, { engine, rulesId });
-    const result = engine.call({ op: "create", rules_id: rulesId, device, options });
-    this.state = result.driver;
+    this.handleId = engine.call({ op: "open", rules_id: rulesId, device, options }).handle;
+    this.status = { linked: false, synced: false, timers: [] };
+    released.register(this, { engine, handle: this.handleId }, this);
+  }
+
+  /** A version-specific snapshot of the whole driver, for inspection and migration. */
+  get state() {
+    return this.engine.call({ op: "snapshot", handle: this.handleId });
   }
 
   get descriptor() {
-    return this.state.assembly.descriptor;
+    return this.engine.call({ op: "view", handle: this.handleId }).descriptor;
+  }
+
+  get linked() {
+    return this.status.linked;
+  }
+
+  get synced() {
+    return this.status.synced;
   }
 
   /** IL driver input; returns descriptor, value, event, send_message, reject or timer data. */
   handle(now, input) {
     if (!Number.isFinite(now)) throw new TypeError("now must be a finite number supplied by the host");
-    const result = this.engine.call({ op: "handle", rules_id: this.rulesId, driver: this.state, input, now });
-    this.state = result.driver;
-    return result.outputs;
+    const { outputs, ...status } = this.engine.call({ op: "drive", handle: this.handleId, input, now });
+    this.status = status;
+    return outputs;
   }
 
   describe(now, seed = []) {
@@ -75,10 +101,16 @@ export class Driver {
   }
 
   carry(old) {
-    this.state = this.engine.call({ op: "carry", rules_id: this.rulesId, driver: this.state, old: old.state }).driver;
+    this.engine.call({ op: "carry_handle", handle: this.handleId, old: old.handleId });
   }
 
   settingsBlock() {
     return this.engine.call({ op: "settings", rules_id: this.rulesId, driver: this.state });
+  }
+
+  /** Release the engine's copy of this driver. */
+  close() {
+    released.unregister(this);
+    return this.engine.call({ op: "close", handle: this.handleId });
   }
 }

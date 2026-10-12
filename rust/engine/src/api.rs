@@ -1,6 +1,6 @@
 use crate::protocol::SlotKind;
 use crate::runtime::{fingerprint, validated};
-use crate::{DriverOptions, EngineError, Input, RulePack};
+use crate::{Driver as LiveDriver, DriverOptions, EngineError, Input, RulePack};
 use crate::{adapter::*, data::*, driver::Driver, driver::check, entity, plan::Plan};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -49,12 +49,24 @@ enum Ruled {
     AdapterCreate,
     AdapterRead,
     StrategyRead,
+    Open,
+}
+/// Operations on a driver kept in engine memory by `open`.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Live {
+    Drive,
+    View,
+    Snapshot,
+    CarryHandle,
+    Close,
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Op {
     Plain(Plain),
     Ruled(Ruled),
+    Live(Live),
 }
 /// The rule pack a request runs with.
 enum Rules<'a> {
@@ -84,6 +96,13 @@ impl<'a> Rules<'a> {
         match self {
             Rules::Registered(pack) => pack.rules(),
             Rules::Inline { rules, .. } => rules,
+        }
+    }
+    /// The pack itself, for a driver that outlives this request.
+    fn pack(&self) -> Result<Arc<RulePack>, EngineError> {
+        match self {
+            Rules::Registered(pack) => Ok(pack.clone()),
+            Rules::Inline { rules, .. } => Ok(Arc::new(RulePack::new((*rules).clone())?)),
         }
     }
     fn fingerprint(&self) -> &str {
@@ -133,7 +152,88 @@ pub fn request(input: &V) -> Result<V, EngineError> {
     match op {
         Op::Plain(op) => plain(op, input),
         Op::Ruled(op) => ruled(op, input, &Rules::resolve(input)?),
+        Op::Live(op) => live(op, input),
     }
+}
+
+/// Drivers kept in engine memory, so each message carries only its input and outputs.
+#[derive(Default)]
+struct Drivers {
+    next: u64,
+    open: HashMap<u64, Arc<Mutex<LiveDriver>>>,
+}
+static DRIVERS: OnceLock<Mutex<Drivers>> = OnceLock::new();
+fn drivers() -> Result<MutexGuard<'static, Drivers>, EngineError> {
+    DRIVERS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| EngineError::InvalidInput("driver registry poisoned".into()))
+}
+fn open_driver(input: &V, pack: &Rules) -> Result<V, EngineError> {
+    let options = if input["options"].is_null() {
+        DriverOptions::default()
+    } else {
+        decode(input, "options")?
+    };
+    let driver = LiveDriver::new(input["device"].clone(), pack.pack()?, options)?;
+    let mut registry = drivers()?;
+    registry.next += 1;
+    let handle = registry.next;
+    registry.open.insert(handle, Arc::new(Mutex::new(driver)));
+    Ok(json!({"handle": handle}))
+}
+/// The driver a request's `field` names. The registry lock is released before the driver is used.
+fn opened(input: &V, field: &str) -> Result<(u64, Arc<Mutex<LiveDriver>>), EngineError> {
+    let handle = input[field]
+        .as_u64()
+        .ok_or_else(|| EngineError::InvalidInput(format!("{field} must be a driver handle")))?;
+    let driver =
+        drivers()?.open.get(&handle).cloned().ok_or_else(|| {
+            EngineError::InvalidInput(format!("{field}: no open driver {handle}"))
+        })?;
+    Ok((handle, driver))
+}
+fn lock(driver: &Mutex<LiveDriver>) -> Result<MutexGuard<'_, LiveDriver>, EngineError> {
+    driver
+        .lock()
+        .map_err(|_| EngineError::InvalidInput("driver poisoned".into()))
+}
+fn status(d: &LiveDriver) -> V {
+    json!({"linked": d.linked(), "synced": d.synced(), "timers": d.timers()})
+}
+fn live(op: Live, input: &V) -> Result<V, EngineError> {
+    if let Live::Close = op {
+        let (handle, _) = opened(input, "handle")?;
+        return Ok(json!(drivers()?.open.remove(&handle).is_some()));
+    }
+    let (handle, driver) = opened(input, "handle")?;
+    if let Live::CarryHandle = op {
+        let (old_handle, old) = opened(input, "old")?;
+        if old_handle != handle {
+            // A copy of the old driver, so two driver locks are never held at once.
+            let old = lock(&old)?.clone();
+            lock(&driver)?.carry(&old);
+        }
+        return Ok(json!(true));
+    }
+    let mut d = lock(&driver)?;
+    Ok(match op {
+        Live::Drive => {
+            let now = input["now"].as_f64().unwrap_or(f64::NAN);
+            let outputs = d.handle(now, decode(input, "input")?)?;
+            let mut result = status(&d);
+            result["outputs"] = json!(outputs);
+            result
+        }
+        Live::View => {
+            let mut result = status(&d);
+            result["descriptor"] = d.descriptor().clone();
+            result["dps"] = d.dps().clone();
+            result
+        }
+        Live::Snapshot => d.snapshot(),
+        Live::CarryHandle | Live::Close => unreachable!("handled above"),
+    })
 }
 fn plain(op: Plain, input: &V) -> Result<V, EngineError> {
     match op {
@@ -331,6 +431,7 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
             let a: Adapter = decode(input, "adapter")?;
             Ok(a.read(&input["dps"], rules))
         }
+        Ruled::Open => open_driver(input, pack),
         Ruled::StrategyRead => {
             strategy_read(s(&input["name"]), &input["value"], &input["config"], rules)
                 .map_err(EngineError::Evaluation)
