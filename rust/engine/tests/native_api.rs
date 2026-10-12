@@ -246,3 +246,28 @@ fn engine_held_drivers_keep_state_between_requests() {
     }
     assert_eq!(call(json!({"op":"view","handle":"x"}))["ok"], false);
 }
+
+#[test]
+fn snapshots_with_misshapen_tables_or_settings_are_rejected() {
+    let rules = pack();
+    let driver = Driver::new(device(), rules.clone(), options()).unwrap();
+    let snapshot = driver.snapshot();
+    assert!(Driver::restore(snapshot.clone(), rules.clone()).is_ok());
+    for (field, value) in [
+        ("values", json!([])),
+        ("codes", json!(null)),
+        ("dps", json!("x")),
+        ("delta", json!({"accept_passive": true, "extra": 1})),
+        ("switches", json!({"p": [-1, "accept_passive"]})),
+    ] {
+        let mut broken = snapshot.clone();
+        broken[field] = value;
+        assert!(
+            matches!(
+                Driver::restore(broken, rules.clone()),
+                Err(EngineError::InvalidInput(_))
+            ),
+            "{field}"
+        );
+    }
+}

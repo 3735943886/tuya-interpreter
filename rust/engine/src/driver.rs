@@ -22,11 +22,11 @@ pub struct Driver {
     pub assembly: Assembly,
     pub covers: Vec<Cover>,
     pub motions: Vec<Motion>,
-    pub delta: Option<V>,
+    pub delta: Option<DeltaSettings>,
     pub timers: Vec<String>,
-    pub codes: V,
-    pub dps: V,
-    pub values: V,
+    pub codes: Table,
+    pub dps: Table,
+    pub values: Table,
     pub described: bool,
     pub linked: bool,
     pub synced: bool,
@@ -42,23 +42,15 @@ pub struct DriverConfig {
     pub block: V,
     pub plans: Vec<Plan>,
     pub adapter: Adapter,
-    pub switches: IndexMap<String, (i64, String)>,
+    pub switches: IndexMap<String, Setting>,
     pub own_blocks: Vec<V>,
 }
 
 impl Driver {
     pub(crate) fn validate_state(&self) -> Result<(), EngineError> {
-        let valid = [
-            &self.codes,
-            &self.dps,
-            &self.values,
-            self.assembly.descriptor.as_ref(),
-        ]
-        .iter()
-        .all(|v| v.is_object())
+        let valid = self.assembly.descriptor.is_object()
             && self.assembly.descriptor["props"].is_object()
             && self.config.own_blocks.len() == 2
-            && self.delta.as_ref().is_none_or(V::is_object)
             && self
                 .assembly
                 .bindings
@@ -70,12 +62,9 @@ impl Driver {
                     Source::Machine { index } => index < self.machines.len(),
                     Source::Motion => true,
                 })
-            && self.config.switches.values().all(|(index, _)| {
-                if *index == -1 {
-                    self.delta.is_some()
-                } else {
-                    *index >= 0 && (*index as usize) < self.covers.len()
-                }
+            && self.config.switches.values().all(|setting| match setting {
+                Setting::AcceptPassive => self.delta.is_some(),
+                Setting::Cover { cover, .. } => *cover < self.covers.len(),
             })
             && self
                 .covers
@@ -188,9 +177,9 @@ impl Driver {
             motions,
             delta,
             timers: vec![],
-            codes: json!({}),
-            dps: json!({}),
-            values: json!({}),
+            codes: Table::default(),
+            dps: Table::default(),
+            values: Table::default(),
             described: false,
             linked: false,
             synced: false,
@@ -218,11 +207,11 @@ impl Driver {
 
     pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<Output>) {
         if value.is_null() {
-            if remove(&mut self.values, prop).is_some() {
+            if self.values.remove(prop).is_some() {
                 out.push(Output::Absent { prop: prop.into() });
             }
         } else if self.values.get(prop).is_none_or(|v| !eq(v, &value)) {
-            self.values[prop] = value.clone();
+            self.values.insert(prop, value.clone());
             out.push(Output::Value {
                 prop: prop.into(),
                 value,
@@ -246,11 +235,12 @@ impl Driver {
                 });
             }
         }
-        for (prop, (idx, key)) in self.config.switches.clone() {
-            let v = if idx < 0 {
-                self.delta.as_ref().unwrap()[&key].clone()
-            } else {
-                self.covers[idx as usize].value(&key)
+        for (prop, setting) in self.config.switches.clone() {
+            let v = match setting {
+                Setting::AcceptPassive => {
+                    json!(self.delta.as_ref().is_some_and(|d| d.accept_passive))
+                }
+                Setting::Cover { cover, key } => self.covers[cover].value(&key),
             };
             self.set(&prop, v, &mut out);
         }
@@ -280,16 +270,14 @@ impl Driver {
             }
         }
         if let Some(delta) = &self.delta {
-            let mut base = json!({"accept_passive":false});
-            merge(&mut base, &self.config.own_blocks[0]["delta"]);
-            let mut vals = json!({});
-            for (k, v) in obj(delta) {
-                if base[&k] != v || self.config.own_blocks[1]["delta"].get(&k).is_some() {
-                    vals[&k] = v;
-                }
-            }
-            if truth(&vals) {
-                out["delta"] = vals;
+            // Kept when it differs from the product's setting or the device block already had it.
+            let base = DeltaSettings::from_block(&self.config.own_blocks[0]["delta"]);
+            if delta.accept_passive != base.accept_passive
+                || self.config.own_blocks[1]["delta"]
+                    .get("accept_passive")
+                    .is_some()
+            {
+                out["delta"] = json!({"accept_passive": delta.accept_passive});
             }
         }
         out
@@ -379,17 +367,17 @@ impl Driver {
             Input::Disconnected => {
                 self.linked = false;
                 self.synced = false;
-                self.codes = json!({});
-                self.dps = json!({});
-                let old = std::mem::replace(&mut self.values, json!({}));
-                for (prop, v) in obj(&old) {
-                    if self.config.switches.contains_key(&prop) {
-                        self.values[&prop] = v;
+                self.codes = Table::default();
+                self.dps = Table::default();
+                let old = self.values.take();
+                for (prop, v) in fields(&old) {
+                    if self.config.switches.contains_key(prop) {
+                        self.values.insert(prop, v.clone());
                     } else if prop != "available" {
-                        out.push(Output::Absent { prop });
+                        out.push(Output::Absent { prop: prop.clone() });
                     }
                 }
-                self.values["available"] = json!(false);
+                self.values.insert("available", json!(false));
                 out.push(Output::Value {
                     prop: "available".into(),
                     value: json!(false),
@@ -414,7 +402,7 @@ impl Driver {
                 }
                 let t = remove(&mut dps, "t").unwrap_or(V::Null);
                 if truth(&dps) {
-                    merge(&mut self.dps, &dps);
+                    self.dps.merge(&dps);
                     let new = self.config.adapter.read(&dps, rules);
                     let pushed = *channel == Channel::Active;
                     let moved: Vec<_> = obj(&new)
@@ -436,7 +424,7 @@ impl Driver {
                     } else {
                         json!(self.seq)
                     };
-                    merge(&mut self.codes, &new);
+                    self.codes.merge(&new);
                     if first {
                         self.synced = true;
                         self.linked = true;
@@ -460,10 +448,7 @@ impl Driver {
                     }
                     let counted = pushed
                         || (*channel == Channel::Passive
-                            && self
-                                .delta
-                                .as_ref()
-                                .is_some_and(|d| truth(&d["accept_passive"])));
+                            && self.delta.as_ref().is_some_and(|d| d.accept_passive));
                     let keys: Vec<_> = self.assembly.bindings.keys().cloned().collect();
                     let mut reads = ReadCache::default();
                     for name in keys {
@@ -552,11 +537,16 @@ impl Driver {
                         reason,
                     }),
                     Ok(value) => {
-                        if let Some((idx, key)) = self.config.switches.get(prop).cloned() {
-                            if idx < 0 {
-                                self.delta.as_mut().unwrap()[&key] = value.clone();
-                            } else {
-                                self.covers[idx as usize].settings[&key] = value.clone();
+                        if let Some(setting) = self.config.switches.get(prop).cloned() {
+                            match setting {
+                                Setting::AcceptPassive => {
+                                    if let Some(delta) = &mut self.delta {
+                                        delta.accept_passive = value == true;
+                                    }
+                                }
+                                Setting::Cover { cover, key } => {
+                                    self.covers[cover].settings[&key] = value.clone();
+                                }
                             }
                             self.set(prop, value, &mut out);
                             out.push(Output::SettingsChanged {
@@ -643,16 +633,16 @@ fn build_adapter(d: &V, dpmap: &V, block: &V, rules: &V) -> Adapter {
         let code = s(&patch["code"]).to_string();
         if patch.get("type").is_none() {
             if let Some(e) = adapter.entries.get_mut(&id) {
-                e.0 = code;
+                e.code = code;
             }
-        } else if adapter.entries.get(&id).is_none_or(|e| e.0 != code) {
+        } else if adapter.entries.get(&id).is_none_or(|e| e.code != code) {
             adapter
                 .entries
-                .insert(id, (code, "default".into(), json!({})));
+                .insert(id, DpEntry::new(code, "default", json!({})));
         }
     }
     let removed = codes(&block["remove"]);
-    adapter.entries.retain(|_, e| !removed.contains(&e.0));
+    adapter.entries.retain(|_, e| !removed.contains(&e.code));
     for (code, r) in obj(&block["remap"]) {
         adapter.remaps[&code] = r;
         adapter.set_bounds(&code, d);
@@ -826,29 +816,50 @@ fn cover_motions(covers: &[Cover], taken: &[String], rules: &V) -> Vec<Motion> {
     motions
 }
 
+/// Settings of a device whose properties accumulate increments.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeltaSettings {
+    /// Count `passive` reports as increments too.
+    pub accept_passive: bool,
+}
+impl DeltaSettings {
+    /// Settings from a validated override `delta` block; absent members keep their defaults.
+    fn from_block(block: &V) -> Self {
+        Self {
+            accept_passive: block["accept_passive"] == true,
+        }
+    }
+}
+
+/// What a device-setting property changes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Setting {
+    /// The delta `accept_passive` setting.
+    AcceptPassive,
+    /// The setting `key` of the cover at index `cover`.
+    Cover { cover: usize, key: String },
+}
+
 /// Delta settings when any bound property accumulates increments.
-fn delta_config(assembly: &Assembly, plans: &[Plan], block: &V) -> Option<V> {
+fn delta_config(assembly: &Assembly, plans: &[Plan], block: &V) -> Option<DeltaSettings> {
     let accumulates = assembly.bindings.values().any(|b| {
         b.plan()
             .and_then(|i| plans.get(i))
             .is_some_and(|p| p.slot_kind == Some(SlotKind::Delta))
     });
-    accumulates.then(|| {
-        let mut cfg = json!({"accept_passive":false});
-        merge(&mut cfg, &block["delta"]);
-        cfg
-    })
+    accumulates.then(|| DeltaSettings::from_block(&block["delta"]))
 }
 
-/// Device-setting properties for cover and delta settings, keyed by property name and mapped
-/// to the cover index (`-1` for delta) and setting name.
+/// Device-setting properties for cover and delta settings, keyed by property name.
 fn config_switches(
     covers: &mut [Cover],
     assembly: &mut Assembly,
     delta: bool,
     taken: &[String],
     rules: &V,
-) -> IndexMap<String, (i64, String)> {
+) -> IndexMap<String, Setting> {
     let mut switches = IndexMap::new();
     for (i, c) in covers.iter_mut().enumerate() {
         for (k, label) in obj(&rules["cover_switches"]) {
@@ -879,14 +890,14 @@ fn config_switches(
             }
             Arc::make_mut(&mut assembly.descriptor)["props"][&prop] = def;
             c.switches.push(k.clone());
-            switches.insert(prop, (i as i64, k));
+            switches.insert(prop, Setting::Cover { cover: i, key: k });
         }
     }
     if delta {
         let prop = "delta_accept_passive";
         if assembly.descriptor["props"].get(prop).is_none() {
             Arc::make_mut(&mut assembly.descriptor)["props"][prop] = json!({"type":"binary","rw":true,"category":"config","label":"Count passive reports"});
-            switches.insert(prop.into(), (-1, "accept_passive".into()));
+            switches.insert(prop.into(), Setting::AcceptPassive);
         }
     }
     switches

@@ -4,6 +4,49 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as V, json};
 pub type Obj = Map<String, V>;
 pub type Roles = IndexMap<String, Role>;
+
+/// A JSON object that always stays an object: driver tables keyed by DP code, DP ID or property.
+/// Reads go through `Deref` to the `Value` that rule evaluation takes; writes keep the shape.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Table(V);
+impl Default for Table {
+    fn default() -> Self {
+        Self(json!({}))
+    }
+}
+impl<'de> Deserialize<'de> for Table {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = V::deserialize(deserializer)?;
+        if value.is_object() {
+            Ok(Self(value))
+        } else {
+            Err(serde::de::Error::custom("expected a JSON object"))
+        }
+    }
+}
+impl std::ops::Deref for Table {
+    type Target = V;
+    fn deref(&self) -> &V {
+        &self.0
+    }
+}
+impl Table {
+    pub fn insert(&mut self, key: &str, value: V) {
+        self.0[key] = value;
+    }
+    pub fn remove(&mut self, key: &str) -> Option<V> {
+        remove(&mut self.0, key)
+    }
+    /// Merge `src` recursively, as [`merge`] does.
+    pub fn merge(&mut self, src: &V) {
+        merge(&mut self.0, src);
+    }
+    /// Empty the table, returning its previous members.
+    pub fn take(&mut self) -> Table {
+        std::mem::take(self)
+    }
+}
 pub fn s(v: &V) -> &str {
     v.as_str().unwrap_or("")
 }

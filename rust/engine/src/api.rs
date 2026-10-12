@@ -285,7 +285,7 @@ fn plain(op: Plain, input: &V) -> Result<V, EngineError> {
             let mut present = vec![];
             let mut missing = vec![];
             for c in arr(&input["commands"]) {
-                if a.entries.values().any(|e| e.0 == s(&c["code"])) {
+                if a.entries.values().any(|e| e.code == s(&c["code"])) {
                     present.push(c)
                 } else {
                     missing.push(c["code"].clone());
@@ -381,7 +381,7 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
                 entries: a
                     .entries
                     .into_iter()
-                    .filter(|(_, e)| !consumed.contains(&e.0))
+                    .filter(|(_, e)| !consumed.contains(&e.code))
                     .collect(),
                 ..a
             };

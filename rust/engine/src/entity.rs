@@ -5,7 +5,7 @@
 //! and DP-type semantics; platform knowledge lives in the rule pack.
 use crate::DpKind;
 use crate::EngineError;
-use crate::adapter::Adapter;
+use crate::adapter::{Adapter, DpEntry};
 use crate::data::*;
 use crate::expr::{Effects, Flow, Restore, Scope, execute, target, text};
 use crate::plan::Plan;
@@ -395,7 +395,9 @@ pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<()
         )
     });
     for id in ids {
-        let (code, _, ci) = &a.entries[id];
+        let DpEntry {
+            code, config: ci, ..
+        } = &a.entries[id];
         if consumed.contains(code) {
             continue;
         }

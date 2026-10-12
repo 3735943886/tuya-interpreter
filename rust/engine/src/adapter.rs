@@ -4,9 +4,38 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
+/// How one local DP ID maps to a DP code. Serialized as `[code, convert, config]`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "(String, String, V)", into = "(String, String, V)")]
+pub struct DpEntry {
+    pub code: String,
+    /// The value conversion (`local_strategy.value_convert`), such as `default` or `enum`.
+    pub convert: String,
+    /// The conversion's `config_item`.
+    pub config: V,
+}
+impl DpEntry {
+    pub fn new(code: impl Into<String>, convert: impl Into<String>, config: V) -> Self {
+        Self {
+            code: code.into(),
+            convert: convert.into(),
+            config,
+        }
+    }
+}
+impl From<(String, String, V)> for DpEntry {
+    fn from((code, convert, config): (String, String, V)) -> Self {
+        Self::new(code, convert, config)
+    }
+}
+impl From<DpEntry> for (String, String, V) {
+    fn from(e: DpEntry) -> Self {
+        (e.code, e.convert, e.config)
+    }
+}
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Adapter {
-    pub entries: IndexMap<String, (String, String, V)>,
+    pub entries: IndexMap<String, DpEntry>,
     pub enum_ranges: V,
     pub unsupported: V,
     pub remaps: V,
@@ -549,12 +578,12 @@ impl Adapter {
                 name = "default";
             }
             a.entries
-                .insert(id, (code, name.into(), meta["config_item"].clone()));
+                .insert(id, DpEntry::new(code, name, meta["config_item"].clone()));
         }
         for (id, code) in obj(dpmap) {
             a.entries
                 .entry(id)
-                .or_insert((s(&code).into(), "default".into(), json!({})));
+                .or_insert_with(|| DpEntry::new(s(&code), "default", json!({})));
         }
         for (code, spec) in obj(&device["status_range"]) {
             if normalized(s(&spec["type"])) == "Enum" {
@@ -579,8 +608,12 @@ impl Adapter {
     pub fn read(&self, dps: &V, rules: &V) -> V {
         let mut out = json!({});
         for (id, raw) in fields(dps) {
-            if let Some((code, name, ci)) = self.entries.get(id)
-                && let Ok(mut v) = strategy_read(name, raw, ci, rules)
+            if let Some(DpEntry {
+                code,
+                convert,
+                config,
+            }) = self.entries.get(id)
+                && let Ok(mut v) = strategy_read(convert, raw, config, rules)
             {
                 if v.is_string()
                     && let Some(alias) = self.remaps[code]["alias"].get(s(&v))
@@ -602,7 +635,7 @@ impl Adapter {
         let mut out = json!({});
         for c in commands {
             let code = s(&c["code"]);
-            let Some((id, (_, name, ci))) = self.entries.iter().find(|(_, e)| e.0 == code) else {
+            let Some((id, entry)) = self.entries.iter().find(|(_, e)| e.code == code) else {
                 return Err(EngineError::Unsupported(format!("no dp for {code}")));
             };
             let mut v = self.flip(code, &c["value"]);
@@ -610,7 +643,7 @@ impl Adapter {
             {
                 v = json!(key);
             }
-            out[id] = strategy_write(name, &v, ci)?;
+            out[id] = strategy_write(&entry.convert, &v, &entry.config)?;
         }
         if !truth(&out) {
             return Err(EngineError::Unsupported("no dp for command".into()));
