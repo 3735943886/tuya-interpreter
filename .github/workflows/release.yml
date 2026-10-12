@@ -185,7 +185,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Enable ARMv7 container emulation
         if: matrix.arch == 'armv7l'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: arm
       - run: pip install cibuildwheel==4.3.0
