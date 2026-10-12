@@ -3,7 +3,7 @@ use crate::StateSource;
 use crate::entity;
 use crate::machine::{Machine, MachineEffects, Method};
 use crate::protocol::SlotKind;
-use crate::{Channel, EngineError, Input, Output, RejectCode, SendChannel};
+use crate::{Channel, DriverOptions, EngineError, Input, Output, RejectCode, SendChannel};
 use crate::{adapter::*, assembly::*, data::*, plan::Plan};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ impl Driver {
             Err(EngineError::InvalidInput("invalid driver state".into()))
         }
     }
-    pub fn new(device: &V, options: &V, rules: &V) -> Result<Self, EngineError> {
+    pub fn new(device: &V, options: &DriverOptions, rules: &V) -> Result<Self, EngineError> {
         if device["id"].as_str().is_none() {
             return Err(EngineError::InvalidDevice("device needs id".into()));
         }
@@ -100,9 +100,8 @@ impl Driver {
                 )));
             }
         }
-        if let Some(dpmap) = options.get("dpmap")
-            && (!dpmap.is_object()
-                || fields(dpmap).any(|(_, code)| code.as_str().is_none_or(str::is_empty)))
+        if !options.dpmap.is_object()
+            || fields(&options.dpmap).any(|(_, code)| code.as_str().is_none_or(str::is_empty))
         {
             return Err(EngineError::InvalidInput(
                 "dpmap must be an object of nonempty codes".into(),
@@ -111,12 +110,12 @@ impl Driver {
         let (d, block, dpmap, info) =
             prepare(device, options, rules).map_err(EngineError::InvalidOverride)?;
         let mut adapter = build_adapter(&d, &dpmap, &block, rules);
-        let env = options
-            .get("env")
-            .cloned()
-            .unwrap_or_else(|| json!({"temperature_unit":"C","allowed_units":rules["host_units"]}));
-        let allow = truth(&options["allow_hazardous"]);
-        let settings = truth(&options["device_settings"]);
+        let env = match &options.env {
+            Some(env) => json!(env),
+            None => json!({"temperature_unit":"C","allowed_units":rules["host_units"]}),
+        };
+        let allow = options.allow_hazardous;
+        let settings = options.device_settings;
         let mut plans = if block["auto"] == false {
             vec![]
         } else {
@@ -126,7 +125,7 @@ impl Driver {
             && truth(
                 block
                     .get("expose_unused")
-                    .unwrap_or(&options["expose_unused"]),
+                    .unwrap_or(&json!(options.expose_unused)),
             )
         {
             entity::unused(&d, &adapter, &mut plans, rules)?;
@@ -173,7 +172,7 @@ impl Driver {
         switches.retain(|k, _| assembly.descriptor["props"].get(k).is_some());
         let own_blocks = [s(&device["product_id"]), s(&device["id"])]
             .iter()
-            .map(|k| options["overrides"][*k].clone())
+            .map(|k| options.overrides[*k].clone())
             .collect();
         Ok(Self {
             config: Arc::new(DriverConfig {

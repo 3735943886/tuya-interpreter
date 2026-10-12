@@ -4,11 +4,15 @@ use crate::{adapter::*, assembly::*, data::*, plan::Plan};
 use serde_json::{Value as V, json};
 use std::sync::Arc;
 
-pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V), String> {
+pub(super) fn prepare(
+    device: &V,
+    options: &crate::DriverOptions,
+    rules: &V,
+) -> Result<(V, V, V, V), String> {
     let mut d = device.clone();
     ensure_tables(&mut d);
     let mut dpmap = json!({});
-    let quirk = if options["use_quirks"] == false {
+    let quirk = if !options.use_quirks {
         &V::Null
     } else {
         &rules["quirks"][s(&d["product_id"])]
@@ -16,7 +20,7 @@ pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V)
     apply_quirk(&mut d, &mut dpmap, quirk);
     map_initial_status(&mut d["status"], quirk);
     let info = device_info(&d, quirk, rules);
-    merge(&mut dpmap, &options["dpmap"]);
+    merge(&mut dpmap, &options.dpmap);
     let mut original = dpmap.clone();
     for (id, meta) in obj(&d["local_strategy"]) {
         let code = strategy_code(&meta);
@@ -24,14 +28,12 @@ pub(super) fn prepare(device: &V, options: &V, rules: &V) -> Result<(V, V, V, V)
             original[&id] = json!(code);
         }
     }
-    if let Some(mapping) = options.get("overrides") {
-        validate_mapping(mapping, rules)?;
-    }
+    validate_mapping(&options.overrides, rules)?;
     let mut overrides = rules["overrides"].clone();
     if !overrides.is_object() {
         overrides = json!({});
     }
-    merge(&mut overrides, &options["overrides"]);
+    merge(&mut overrides, &options.overrides);
     let mut block = json!({});
     for key in [s(&d["product_id"]), s(&d["id"])] {
         let b = &overrides[key];

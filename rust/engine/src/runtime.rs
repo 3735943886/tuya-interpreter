@@ -119,8 +119,6 @@ impl Driver {
         rules: Arc<RulePack>,
         options: DriverOptions,
     ) -> Result<Self, EngineError> {
-        let options =
-            serde_json::to_value(options).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
         let mut state = crate::driver::Driver::new(&device, &options, rules.rules())?;
         state.rules_fingerprint = rules.fingerprint.clone();
         Ok(Self { state, rules })

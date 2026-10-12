@@ -312,8 +312,6 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
             } else {
                 decode(input, "options")?
             };
-            let options = serde_json::to_value(options)
-                .map_err(|e| EngineError::InvalidInput(e.to_string()))?;
             let mut d = Driver::new(&input["device"], &options, rules)?;
             d.rules_fingerprint = pack.fingerprint().into();
             Ok(json!({"driver":d}))
