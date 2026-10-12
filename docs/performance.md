@@ -19,7 +19,7 @@ the updated library is built from the accompanying working-tree changes.
 
 ## Direct Rust calls
 
-`cargo run --locked --release --manifest-path rust/Cargo.toml --example benchmark -- 5000`
+`cargo run --release --manifest-path rust/Cargo.toml --example benchmark -- 5000`
 compares the updated typed in-memory API with the updated JSON API in the same Rust
 process. JSON calls serialize and restore the complete driver snapshot on each message;
 native calls retain the driver in memory. These results measure the total API path,

@@ -68,8 +68,8 @@ jobs:
         with:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --manifest-path rust/Cargo.toml
-      - run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path rust/Cargo.toml
+      - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - run: pip install -e ".[test]"
       - run: python -m pytest -q
 
@@ -207,7 +207,7 @@ jobs:
             # musl defaults to static CRT; ctypes needs a dynamically loadable .so.
             export RUSTFLAGS="-C target-feature=-crt-static"
           fi
-          cargo zigbuild --locked --release --manifest-path rust/Cargo.toml --target "$build_target"
+          cargo zigbuild --release --manifest-path rust/Cargo.toml --target "$build_target"
           mkdir -p prebuilt
           cp "rust/target/$TUYA_BUILD_TARGET/release/libtuya_interpreter.so" prebuilt/
       - name: Package, repair and test installed wheel
@@ -244,7 +244,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo package --locked --manifest-path rust/engine/Cargo.toml
+      - run: cargo package --manifest-path rust/engine/Cargo.toml
       - uses: actions/upload-artifact@v7
         with:
           name: crate
@@ -295,4 +295,4 @@ jobs:
       - name: Publish Rust crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
-        run: cargo publish --locked --manifest-path rust/engine/Cargo.toml
+        run: cargo publish --manifest-path rust/engine/Cargo.toml

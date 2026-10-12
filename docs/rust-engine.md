@@ -269,9 +269,9 @@ the platform library and JSON pack; they need no Rust toolchain or Python
 runtime dependencies.
 
 ```sh
-cargo test --locked --manifest-path rust/Cargo.toml
+cargo test --manifest-path rust/Cargo.toml
 cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 pip install -e '.[test]'
 python -m pytest -q
 python -m build
@@ -312,7 +312,7 @@ rule change and update the affected traces and goldens deliberately.
 
 The native Rust API also replays every frozen trace. Converter regressions cover effects from each method,
 transaction rollback, partial override composition, malformed declarations and allocation limits. To compare
-in-memory calls with JSON transport, run `cargo run --locked --release --manifest-path rust/Cargo.toml --example
+in-memory calls with JSON transport, run `cargo run --release --manifest-path rust/Cargo.toml --example
 benchmark -- 5000`. `scripts/benchmark_abi.py <library> 2000` compares shared-library revisions with the same Python
 and ctypes transport. Measurements exclude driver construction and use five rounds of alternating DP pushes.
 See [local performance measurements](performance.md) for the recorded baseline comparison and API timings.

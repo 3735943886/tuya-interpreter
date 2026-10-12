@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 tuya-interpreter = { path = "../../rust/engine" }
-rustuya = { version = "=0.4.3", features = ["tokio"] }
+rustuya = { version = "0.4.3", features = ["tokio"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal"] }
 clap = { version = "4", features = ["derive"] }

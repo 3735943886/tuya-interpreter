@@ -1,24 +1,35 @@
 # tuya-interpreter
 
-A portable Tuya device interpreter with bidirectional conversion. It interprets device metadata and DPS packets,
-produces an [ildevice](https://github.com/3735943886/ildevice) intermediate device description,
-values and events, and converts ildevice commands back into Tuya DPS.
+**A universal Tuya interpreter. Raw data points in, human-friendly device semantics out.**
 
-ildevice is a human-readable, developer-friendly intermediate device model. It describes device
-properties, values, events and commands in a common format that is easy to inspect and use in
-downstream applications. The converter keeps Tuya knowledge in one place so hosts can use the
-same device semantics across transports and languages.
+Turn Tuya DP–value pairs into meaningful device properties, values, events and commands.
+Give the interpreter a device schema and rule pack, then feed it DPS from your preferred
+transport. It handles DP mappings, value decoding, scales, units and device-specific behavior,
+and converts common device commands back into the DPS the device expects.
 
 ```text
-Tuya device JSON + rule pack
-            │
-            ▼
-Tuya DPS ⇄ interpretation engine ⇄ ildevice descriptor / values / events / commands
+Device A: {"1": true,   "2": 235}   ─┐
+                                    ├─ schema + rules → switch_1: on
+Device B: {"101": true, "102": 2350} ─┘                   temp_current: 23.5 °C
+
+Common command: switch_1 = true → interpreter → device-specific Tuya DPS
 ```
 
-The implementation is a Sans-IO Rust engine with Python and JavaScript/WebAssembly bindings
-and a JSON C ABI. The host supplies data and time, and executes the returned effects.
-The engine opens no sockets and reads no clock.
+The result is [ildevice](https://github.com/3735943886/ildevice): a **human-readable,
+developer-friendly intermediate device model**. Its descriptor tells your application what
+properties a device exposes, their types and units, and which commands are available.
+Use that common model in dashboards, automation systems, gateways or your own tools, with
+Tuya interpretation shared across applications.
+
+**Interpret once. Integrate anywhere.** The same Rust engine powers the native Rust API,
+Python wrapper and JavaScript/WebAssembly binding, with a JSON C ABI for other languages.
+Use Tuya DP–value pairs from rustuya, TinyTuya or another transport implementation;
+the interpretation stays independent of how the data arrives.
+
+The engine is Sans-IO: your host owns connections, supplies time and executes returned effects.
+Device schemas and rules provide the meaning of raw DPs; the interpreter handles the conversion
+and state. See the [two-device example](examples/README.md#same-application-different-devices)
+for the same UI operating different DP layouts and temperature scales.
 
 ## Device JSON: what the converter uses
 
@@ -278,7 +289,7 @@ and [local performance measurements](docs/performance.md).
 ## Development and validation
 
 ```sh
-cargo test --locked --manifest-path rust/Cargo.toml
+cargo test --manifest-path rust/Cargo.toml
 pip install -e ".[test]"
 python -m pytest
 ```

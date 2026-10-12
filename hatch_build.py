@@ -25,7 +25,7 @@ class CustomBuildHook(BuildHookInterface):
             if not library.is_absolute():
                 library = root / library
         else:
-            command = ['cargo', 'build', '--locked', '--release', '--manifest-path', str(manifest)]
+            command = ['cargo', 'build', '--release', '--manifest-path', str(manifest)]
             if triple:
                 command.extend(['--target', triple])
             subprocess.run(command, check=True)

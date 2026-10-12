@@ -52,9 +52,9 @@ OIDC credentials. A configured token takes precedence; there is no fallback afte
 ## Preparing a release
 
 1. Set `rust/engine/Cargo.toml` to the intended SemVer version.
-2. Update both Cargo lockfiles (`rust/Cargo.lock` and `examples/rust/Cargo.lock`) by running
-   `cargo check --manifest-path rust/Cargo.toml` and
-   `cargo check --manifest-path examples/rust/Cargo.toml`.
+2. Check dependency resolution with `cargo check --manifest-path rust/Cargo.toml` and
+   `cargo check --manifest-path examples/rust/Cargo.toml`. Cargo lockfiles are ignored;
+   fresh checkouts resolve the latest versions allowed by each manifest.
 3. Commit the changes and run the Release workflow manually to validate and build artifacts.
 4. Push the matching version tag when ready to publish, for example:
 

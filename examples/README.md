@@ -187,7 +187,7 @@ python -m tuyamock --host 127.0.0.1 --port 16668 --version 3.5 \
 In a second terminal, from this repository:
 
 ```sh
-cargo run --locked --manifest-path examples/rust/Cargo.toml
+cargo run --manifest-path examples/rust/Cargo.toml
 ```
 
 Defaults select the included fictional schema, loopback port 16668, protocol 3.5 and the
@@ -197,7 +197,7 @@ mock with Ctrl-C when finished.
 For a real direct LAN switch, use your private device metadata:
 
 ```sh
-cargo run --locked --manifest-path examples/rust/Cargo.toml -- \
+cargo run --manifest-path examples/rust/Cargo.toml -- \
   --file /path/to/private/tuyadevices.json --device-id YOUR_DEVICE_ID
 ```
 
@@ -230,7 +230,7 @@ python -m tuyamock --host 127.0.0.1 --port 16668 --version 3.5 \
 Then connect with its schema and the shared temperature rule layer:
 
 ```sh
-TUYA_LOCAL_KEY=0123456789abcdef cargo run --locked \
+TUYA_LOCAL_KEY=0123456789abcdef cargo run \
   --manifest-path examples/rust/Cargo.toml -- \
   --file examples/devices/device-a.json --ip 127.0.0.1 --port 16668 --version 3.5 \
   --rules-layer examples/devices/rules.json

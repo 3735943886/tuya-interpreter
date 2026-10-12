@@ -21,9 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --manifest-path rust/Cargo.toml
+      - run: cargo test --manifest-path rust/Cargo.toml
       - run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-      - run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - run: pip install -e ".[test]" tuyamock==0.0.6
       - run: pip install ruff==0.16.8 && ruff check src tests hatch_version.py
       - run: python -m pytest -q
@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - run: cargo build --locked --manifest-path rust/Cargo.toml --release --target wasm32-unknown-unknown
+      - run: cargo build --manifest-path rust/Cargo.toml --release --target wasm32-unknown-unknown
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -51,9 +51,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install pytest tuyamock==0.0.6
-      - run: cargo build --locked --manifest-path examples/rust/Cargo.toml
+      - run: cargo build --manifest-path examples/rust/Cargo.toml
       - run: cargo fmt --manifest-path examples/rust/Cargo.toml -- --check
-      - run: cargo clippy --locked --manifest-path examples/rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path examples/rust/Cargo.toml --all-targets -- -D warnings
       - run: python -m pytest tests/test_rust_toggle_cli.py -q
         env:
           TUYA_RUST_TOGGLE_BIN: examples/rust/target/debug/tuya-interpreter-toggle-example
