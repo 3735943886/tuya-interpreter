@@ -32,7 +32,7 @@ conversion callbacks.
 | `quirks` | tuya-device-handlers' schema patches by product id, generated |
 | `units`, `host_units` | unit aliases and HA's allowed units, generated |
 | `maps`, `features`, `constants`, `wind`, `electricity`, `meter_alarms` | lookup data the specs and codecs use |
-| `cover_defaults`, `cover_switches`, `motion_property` | cover settings, their switch labels and the `cover_state` property |
+| `cover_defaults`, `cover_switches`, `motion_property` | defaults of the engine's cover settings, labels of those exposed as switches, and the `cover_state` property; the engine defines which settings exist, so other keys are rejected |
 | `strategies` | the codec names a device's `local_strategy` may use |
 | `rw_roles` | roles that imply a writable property; an override's `rw: false` drops such a role |
 | `overrides` | product/device fixes (README) |

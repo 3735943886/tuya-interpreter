@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as V, json};
 use std::sync::Arc;
 mod check;
-mod cover;
+pub(crate) mod cover;
 pub(crate) mod overrides;
 pub use check::check;
 use cover::{Cover, Motion, make_covers, own};
@@ -69,7 +69,7 @@ impl Driver {
             && self
                 .covers
                 .iter()
-                .all(|cover| cover.plan < self.config.plans.len() && cover.settings.is_object());
+                .all(|cover| cover.plan < self.config.plans.len());
         if valid {
             Ok(())
         } else {
@@ -250,10 +250,11 @@ impl Driver {
         let mut out = json!({});
         for c in &self.covers {
             let mut base = c.defaults.clone();
-            merge(&mut base, &own(&self.config.own_blocks[0], &c.group));
+            base.apply(&own(&self.config.own_blocks[0], &c.group));
+            let base = json!(base);
             let had = own(&self.config.own_blocks[1], &c.group);
             let mut vals = json!({});
-            for (k, v) in obj(&c.settings) {
+            for (k, v) in obj(&json!(c.settings)) {
                 if v != base[&k] || had.get(&k).is_some() {
                     vals[&k] = v;
                 }
@@ -545,7 +546,7 @@ impl Driver {
                                     }
                                 }
                                 Setting::Cover { cover, key } => {
-                                    self.covers[cover].settings[&key] = value.clone();
+                                    self.covers[cover].settings.set(&key, &value);
                                 }
                             }
                             self.set(prop, value, &mut out);
@@ -656,7 +657,7 @@ fn without_target_positions(d: &V, covers: &[Cover]) -> Option<V> {
     let mut selected = d.clone();
     let mut dropped = false;
     for c in covers {
-        if truth(&c.settings["position_from_target"])
+        if c.settings.position_from_target
             && c.separate()
             && let Some(r) = &c.cur
         {
@@ -673,21 +674,19 @@ fn without_target_positions(d: &V, covers: &[Cover]) -> Option<V> {
 
 /// Apply a cover's inversion settings to the adapter's DP conversions.
 fn invert_cover(c: &Cover, adapter: &mut Adapter, d: &V, rules: &V) {
-    for (k, r) in [
-        ("invert_position", c.cur.as_ref()),
+    for (invert, r) in [
+        (c.settings.invert_position, c.cur.as_ref()),
         (
-            "invert_set_position",
+            c.settings.invert_set_position,
             if c.separate() { c.setp.as_ref() } else { None },
         ),
-        ("invert_tilt", c.tilt.as_ref()),
+        (c.settings.invert_tilt, c.tilt.as_ref()),
     ] {
-        if truth(&c.settings[k])
-            && let Some(r) = r
-        {
+        if invert && let Some(r) = r {
             adapter.invert(&r.code, d);
         }
     }
-    if truth(&c.settings["invert_control"])
+    if c.settings.invert_control
         && c.applies("invert_control")
         && let Some(r) = &c.ins
     {
@@ -807,9 +806,9 @@ fn cover_motions(covers: &[Cover], taken: &[String], rules: &V) -> Vec<Motion> {
             },
             position: c.cur.as_ref().map(|r| r.code.clone()),
             words,
-            settle: n(&c.settings["settle"]),
+            settle: c.settings.settle,
             mode: source,
-            invert_report: truth(&c.settings["invert_reported_motion"]),
+            invert_report: c.settings.invert_reported_motion,
             ..Motion::default()
         });
     }

@@ -1,5 +1,5 @@
 //! Rule-pack layering and validation over JSON the host decoded; the engine reads no files.
-use crate::data::{items, s};
+use crate::data::{fields, items, s};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
@@ -121,6 +121,14 @@ fn check(value: &Value, schema: &Value, root: &Value, at: &str) -> Result<(), St
 pub fn validate(value: &Value) -> Result<(), String> {
     let schema = schema()?;
     check(value, schema, schema, "")?;
+    // Cover settings have engine-defined meanings: the pack supplies defaults and labels only.
+    crate::driver::cover::CoverSettings::from_rules(&value["cover_defaults"])?;
+    if let Some(key) = fields(&value["cover_switches"])
+        .map(|(key, _)| key)
+        .find(|key| !crate::driver::cover::CoverSettings::known(key))
+    {
+        return Err(format!("cover_switches: unknown cover setting {key}"));
+    }
     if let Some(overrides) = value.get("overrides") {
         crate::driver::overrides::validate_mapping(overrides, value)
             .map_err(|e| format!("override: {e}"))?;

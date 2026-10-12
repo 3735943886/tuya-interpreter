@@ -131,10 +131,32 @@
       }
     },
     "cover_defaults": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "invert_position": {"type": "boolean"},
+        "invert_set_position": {"type": "boolean"},
+        "invert_control": {"type": "boolean"},
+        "settle": {"type": "number"},
+        "invert_tilt": {"type": "boolean"},
+        "position_from_target": {"type": "boolean"},
+        "state_source": {"enum": [null, "control", "inferred", "none"]},
+        "invert_reported_motion": {"type": "boolean"}
+      },
+      "additionalProperties": false
     },
     "cover_switches": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "invert_position": {"type": "string"},
+        "invert_set_position": {"type": "string"},
+        "invert_control": {"type": "string"},
+        "settle": {"type": "string"},
+        "invert_tilt": {"type": "string"},
+        "position_from_target": {"type": "string"},
+        "state_source": {"type": "string"},
+        "invert_reported_motion": {"type": "string"}
+      },
+      "additionalProperties": false
     },
     "motion_property": {
       "type": "object"

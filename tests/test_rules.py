@@ -30,7 +30,11 @@ def test_array_replacement_member_deletion_and_null():
 
 
 @pytest.mark.parametrize('value', [{'version': 2}, {'layouts': []}, {'unknown': {}},
-                                 {'platforms': [{'platform': 'switch'}]}, {'version': {'$delete': True}}])
+                                 {'platforms': [{'platform': 'switch'}]}, {'version': {'$delete': True}},
+                                 # cover settings have engine-defined meanings; a pack cannot invent one
+                                 {'cover_defaults': {'invert_everything': False}},
+                                 {'cover_defaults': {'settle': 'slow'}},
+                                 {'cover_switches': {'invert_everything': 'Invert everything'}}])
 def test_invalid_rule_sets_are_rejected(value):
     with pytest.raises(ValueError):
         merge_rules([value], base=rules())

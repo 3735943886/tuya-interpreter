@@ -2,8 +2,64 @@
 use crate::entity::Entity;
 use crate::{MotionState, StateSource};
 use crate::{assembly::*, data::*, plan::Plan};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value as V, json};
+
+/// A cover's settings. Their meaning is fixed here; the rule pack's `cover_defaults` supplies the
+/// defaults and `cover_switches` the ones a device can expose as properties. Fields keep the rule
+/// pack's declaration order, which settings blocks follow.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CoverSettings {
+    pub invert_position: bool,
+    pub invert_set_position: bool,
+    pub invert_control: bool,
+    /// Seconds after the last movement at which an inferred motion counts as stopped; 0 for none.
+    #[serde(serialize_with = "canonical")]
+    pub settle: f64,
+    pub invert_tilt: bool,
+    pub position_from_target: bool,
+    /// Where `cover_state` comes from; `None` gives the cover no `cover_state` at all.
+    pub state_source: Option<StateSource>,
+    pub invert_reported_motion: bool,
+}
+fn canonical<S: Serializer>(x: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    number(*x).serialize(serializer)
+}
+impl CoverSettings {
+    /// The rule pack's `cover_defaults`.
+    pub fn from_rules(defaults: &V) -> Result<Self, String> {
+        Self::deserialize(defaults).map_err(|e| format!("cover_defaults: {e}"))
+    }
+    /// Whether `key` names a setting.
+    pub fn known(key: &str) -> bool {
+        json!(Self::default()).get(key).is_some()
+    }
+    pub fn get(&self, key: &str) -> V {
+        json!(self)[key].clone()
+    }
+    /// Set one setting from JSON; an unknown key or a value of the wrong type changes nothing.
+    pub fn set(&mut self, key: &str, value: &V) -> bool {
+        let mut all = json!(self);
+        if all.get(key).is_none() {
+            return false;
+        }
+        all[key] = value.clone();
+        match Self::deserialize(&all) {
+            Ok(settings) => {
+                *self = settings;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+    /// Apply the settings an override `cover` block names; other members are ignored.
+    pub fn apply(&mut self, block: &V) {
+        for (key, value) in fields(block) {
+            self.set(key, value);
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Cover {
@@ -11,8 +67,8 @@ pub struct Cover {
     pub prefix: String,
     pub group: Option<String>,
     pub hazardous: bool,
-    pub defaults: V,
-    pub settings: V,
+    pub defaults: CoverSettings,
+    pub settings: CoverSettings,
     pub cur: Option<Role>,
     pub setp: Option<Role>,
     pub ins: Option<Role>,
@@ -25,7 +81,7 @@ pub struct Cover {
 impl Cover {
     /// Where `cover_state` comes from; `None` gives the cover no `cover_state` at all.
     pub fn source(&self) -> Option<StateSource> {
-        serde_json::from_value(self.settings["state_source"].clone()).ok()
+        self.settings.state_source
     }
     /// Motion can be inferred only from a position and something that says a move began.
     pub fn can_infer(&self) -> bool {
@@ -50,11 +106,7 @@ impl Cover {
         }
     }
     pub fn value(&self, k: &str) -> V {
-        if k == "state_source" {
-            json!(self.source())
-        } else {
-            self.settings[k].clone()
-        }
+        self.settings.get(k)
     }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -267,17 +319,14 @@ pub(super) fn make_covers(
                 .map(|e| e.field("cover"))
                 .unwrap_or(&V::Null);
             let role = |k: &str| p.role(s(&spec[k])).cloned();
-            let mut defaults = rules["cover_defaults"].clone();
+            // Validated with the rule pack.
+            let mut defaults =
+                CoverSettings::from_rules(&rules["cover_defaults"]).unwrap_or_default();
             if settings {
-                defaults["state_source"] = json!("inferred");
+                defaults.state_source = Some(StateSource::Inferred);
             }
             let mut cfg = defaults.clone();
-            let own = own(block, group);
-            for (k, v) in obj(&own) {
-                if defaults.get(&k).is_some() {
-                    cfg[&k] = v;
-                }
-            }
+            cfg.apply(&own(block, group));
             let cur = codes(&spec["position"])
                 .iter()
                 .find_map(|k| p.role(k))
