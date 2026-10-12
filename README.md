@@ -8,8 +8,8 @@ transport. It handles DP mappings, value decoding, scales, units and device-spec
 and converts common device commands back into the DPS the device expects.
 
 ```text
-Device A: {"1": true,   "2": 235}   ─┐
-                                    ├─ schema + rules → switch_1: on
+Device A: {"1": true,   "2": 235}    ─┐
+                                      ├─ schema + rules → switch_1: on
 Device B: {"101": true, "102": 2350} ─┘                   temp_current: 23.5 °C
 
 Common command: switch_1 = true → interpreter → device-specific Tuya DPS
