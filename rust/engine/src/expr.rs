@@ -562,7 +562,7 @@ impl<'a> Scope<'a> {
                 }
                 json!(format!("{:0width$x}", n(a) as i64, width = width as usize))
             }
-            "hex_ints" => hex_ints(a, n(b) as usize, n(arg(2)) as usize),
+            "hex_ints" => hex_ints(a, b, arg(2))?,
             "parse_json" => parse(a),
             "b64_utf8" => b64(a)
                 .and_then(|x| String::from_utf8(x).ok())
@@ -669,17 +669,32 @@ pub fn text(v: &V) -> String {
     }
 }
 
-fn hex_ints(v: &V, width: usize, count: usize) -> V {
-    let Some(t) = v
-        .as_str()
-        .filter(|t| t.is_ascii() && t.len() == width * count)
-    else {
-        return V::Null;
+fn hex_ints(v: &V, width: &V, count: &V) -> Result<V, String> {
+    let dimension = |value: &V, min: f64, limit: usize| {
+        value
+            .as_f64()
+            .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= min && *x <= limit as f64)
+            .map(|x| x as usize)
+            .ok_or_else(|| "invalid hex_ints dimensions".to_string())
     };
-    (0..count)
-        .map(|i| u64::from_str_radix(&t[i * width..(i + 1) * width], 16).ok())
+    let width = dimension(width, 1.0, TEXT_LIMIT)?;
+    let count = dimension(count, 0.0, VALUE_LIMIT - 1)?;
+    let len = width
+        .checked_mul(count)
+        .filter(|len| *len <= TEXT_LIMIT)
+        .ok_or("rule text size limit exceeded")?;
+    let Some(t) = v.as_str().filter(|t| t.is_ascii() && t.len() == len) else {
+        return Ok(V::Null);
+    };
+    Ok(t.as_bytes()
+        .chunks_exact(width)
+        .map(|chunk| {
+            std::str::from_utf8(chunk)
+                .ok()
+                .and_then(|chunk| u64::from_str_radix(chunk, 16).ok())
+        })
         .collect::<Option<Vec<_>>>()
-        .map_or(V::Null, |xs| json!(xs))
+        .map_or(V::Null, |xs| json!(xs)))
 }
 
 /// Whether a program keeps going or stopped on purpose (a failed requirement).
@@ -827,5 +842,34 @@ mod tests {
             Scope::new(&functions).eval(&e).unwrap_err(),
             "rule nesting limit exceeded"
         );
+    }
+
+    #[test]
+    fn hex_ints_validates_dimensions_and_preserves_decoding() {
+        for (width, count) in [
+            (json!(9_223_372_036_854_775_808u64), json!(2)),
+            (json!(0), json!(2)),
+            (json!(-1), json!(2)),
+            (json!(1.5), json!(2)),
+            (json!(2), json!(-1)),
+            (json!(2), json!(1.5)),
+            (json!(2), json!(VALUE_LIMIT)),
+            (json!(TEXT_LIMIT), json!(2)),
+            (json!("2"), json!(2)),
+        ] {
+            assert!(eval(json!({"op":"hex_ints","args":["",width,count]})).is_err());
+        }
+        for (text, width, count, expected) in [
+            ("00ff", 2.0, 2.0, json!([0, 255])),
+            ("", 2.0, 0.0, json!([])),
+            ("zz", 2.0, 1.0, V::Null),
+            ("0", 2.0, 1.0, V::Null),
+            ("é", 2.0, 1.0, V::Null),
+        ] {
+            assert_eq!(
+                eval(json!({"op":"hex_ints","args":[text,width,count]})).unwrap(),
+                expected
+            );
+        }
     }
 }

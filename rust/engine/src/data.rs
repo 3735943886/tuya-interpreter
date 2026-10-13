@@ -67,7 +67,25 @@ pub fn truth(v: &V) -> bool {
 }
 pub fn eq(a: &V, b: &V) -> bool {
     if (a.is_number() || a.is_boolean()) && (b.is_number() || b.is_boolean()) {
-        n(a) == n(b)
+        let integer = |value: &V| {
+            value
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| value.as_u64().map(i128::from))
+                .or_else(|| value.as_bool().map(i128::from))
+        };
+        match (integer(a), integer(b)) {
+            (Some(a), Some(b)) => a == b,
+            (Some(integer), None) | (None, Some(integer)) => {
+                let float = if a.is_f64() { n(a) } else { n(b) };
+                // Only integral floats in the JSON integer range can equal an integer.
+                float >= i64::MIN as f64
+                    && float < 18_446_744_073_709_551_616.0
+                    && float.fract() == 0.0
+                    && float as i128 == integer
+            }
+            (None, None) => n(a) == n(b),
+        }
     } else {
         a == b
     }

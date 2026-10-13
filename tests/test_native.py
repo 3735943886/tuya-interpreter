@@ -48,6 +48,47 @@ def test_rule_layout_changes_without_rebuilding_rust():
     assert result['driver']['assembly']['descriptor']['props']['switch_1']['label'] == 'JSON configured switch'
 
 
+def test_invalid_hex_dimensions_leave_live_driver_usable():
+    pack = copy.deepcopy(rules())
+    pack['entities']['switch']['state'] = {
+        'fields': {'is_on': {'op': 'hex_ints', 'args': ['', 9223372036854775808, 2]}}}
+    device = {'id': 'd', 'category': 'kg', 'function': {'switch_1': {'type': 'Boolean', 'values': {}}}}
+    driver = TuyaDriver(device, rules=pack, dpmap={'1': 'switch_1'})
+    try:
+        before = driver.state
+        with pytest.raises(ValueError, match='invalid hex_ints dimensions'):
+            driver.handle(1, Message('active', {'1': True}))
+        assert driver.state == before
+        assert driver.descriptor['id'] == 'd'
+        driver.handle(2, Connected())
+        assert driver.linked
+    finally:
+        driver.close()
+
+
+@pytest.mark.parametrize('allowed,current,accepted', [
+    (9007199254740992, 9007199254740993, False),
+    (9007199254740992.0, 9007199254740993, False),
+    (9007199254740993, 9007199254740992.0, False),
+    (18446744073709551615, 18446744073709551614, False),
+    (18446744073709551615, float(18446744073709551615), False),
+    (-9223372036854775808, -9223372036854775807, False),
+    (9007199254740993, 9007199254740993, True),
+    (9007199254740992, 9007199254740992.0, True),
+    (1, True, True),
+    (False, 0.0, True),
+    (1, 1.5, False),
+])
+def test_requires_compares_integer_states_without_rounding(allowed, current, accepted):
+    descriptor = {'props': {'switch': {'type': 'binary', 'rw': True,
+                                      'requires': {'prop': 'mode', 'in': [allowed]}}}}
+    result = call('check', descriptor=descriptor, state={'mode': current}, prop='switch', value=True)
+    if accepted:
+        assert result == {'accept': True}
+    else:
+        assert result['reject'] == 'requires_unmet'
+
+
 def test_the_package_has_no_python_conversion_code():
     import importlib
     for name in ('tuya_interpreter.tuya', 'tuya_interpreter.assemble', 'tuya_interpreter.fallback'):
