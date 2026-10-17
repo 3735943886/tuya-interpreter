@@ -79,12 +79,12 @@ rerun only the failed publisher job. Already published versions cannot be overwr
 ## Installing the alpha
 
 ```sh
-pip install 'tuya-interpreter==0.1.0a3'
+pip install 'tuya-interpreter==0.1.0a4'
 ```
 
 ```toml
 [dependencies]
-tuya-interpreter = "=0.1.0-alpha.3"
+tuya-interpreter = "=0.1.0-alpha.4"
 ```
 
 Python imports and Rust crate references use `tuya_interpreter`.
