@@ -15,6 +15,8 @@ const DEPTH_LIMIT: usize = 64;
 pub const STATEMENT_LIMIT: usize = 10_000;
 const VALUE_LIMIT: usize = 100_000;
 const TEXT_LIMIT: usize = 1_048_576;
+// A program may allocate up to 16 maximum-sized text values over its lifetime.
+const ALLOCATION_BYTE_LIMIT: usize = 16 * TEXT_LIMIT;
 
 fn bounded(value: &V) -> Result<(usize, usize), String> {
     fn visit(value: &V, nodes: &mut usize, bytes: &mut usize, depth: usize) -> Result<(), String> {
@@ -111,7 +113,7 @@ impl<'a> Scope<'a> {
             budget: EVAL_LIMIT,
             depth: 0,
             allocation_nodes: EVAL_LIMIT,
-            allocation_bytes: 16 * TEXT_LIMIT,
+            allocation_bytes: ALLOCATION_BYTE_LIMIT,
         }
     }
 

@@ -43,14 +43,31 @@ pub struct DriverConfig {
     pub plans: Vec<Plan>,
     pub adapter: Adapter,
     pub switches: IndexMap<String, Setting>,
-    pub own_blocks: Vec<V>,
+    pub own_blocks: OwnBlocks,
+}
+
+/// User overrides at each precedence level; snapshots retain their two-element array.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "[V; 2]", into = "[V; 2]")]
+pub struct OwnBlocks {
+    product: V,
+    device: V,
+}
+impl From<[V; 2]> for OwnBlocks {
+    fn from([product, device]: [V; 2]) -> Self {
+        Self { product, device }
+    }
+}
+impl From<OwnBlocks> for [V; 2] {
+    fn from(blocks: OwnBlocks) -> Self {
+        [blocks.product, blocks.device]
+    }
 }
 
 impl Driver {
     pub(crate) fn validate_state(&self) -> Result<(), EngineError> {
         let valid = self.assembly.descriptor.is_object()
             && self.assembly.descriptor["props"].is_object()
-            && self.config.own_blocks.len() == 2
             && self
                 .assembly
                 .bindings
@@ -159,10 +176,10 @@ impl Driver {
         patch_descriptor(&mut assembly, &mut plans, &block, &selected, rules)
             .map_err(EngineError::InvalidOverride)?;
         switches.retain(|k, _| assembly.descriptor["props"].get(k).is_some());
-        let own_blocks = [s(&device["product_id"]), s(&device["id"])]
-            .iter()
-            .map(|k| options.overrides[*k].clone())
-            .collect();
+        let own_blocks = OwnBlocks {
+            product: options.overrides[s(&device["product_id"])].clone(),
+            device: options.overrides[s(&device["id"])].clone(),
+        };
         Ok(Self {
             config: Arc::new(DriverConfig {
                 device: d,
@@ -206,17 +223,7 @@ impl Driver {
     }
 
     pub fn set(&mut self, prop: &str, value: V, out: &mut Vec<Output>) {
-        if value.is_null() {
-            if self.values.remove(prop).is_some() {
-                out.push(Output::Absent { prop: prop.into() });
-            }
-        } else if self.values.get(prop).is_none_or(|v| !eq(v, &value)) {
-            self.values.insert(prop, value.clone());
-            out.push(Output::Value {
-                prop: prop.into(),
-                value,
-            });
-        }
+        set_value(&mut self.values, prop, value, out);
     }
     pub fn describe(&mut self) -> Vec<Output> {
         if self.described {
@@ -250,9 +257,9 @@ impl Driver {
         let mut out = json!({});
         for c in &self.covers {
             let mut base = c.defaults.clone();
-            base.apply(&own(&self.config.own_blocks[0], &c.group));
+            base.apply(&own(&self.config.own_blocks.product, &c.group));
             let base = json!(base);
-            let had = own(&self.config.own_blocks[1], &c.group);
+            let had = own(&self.config.own_blocks.device, &c.group);
             let mut vals = json!({});
             for (k, v) in obj(&json!(c.settings)) {
                 if v != base[&k] || had.get(&k).is_some() {
@@ -272,9 +279,9 @@ impl Driver {
         }
         if let Some(delta) = &self.delta {
             // Kept when it differs from the product's setting or the device block already had it.
-            let base = DeltaSettings::from_block(&self.config.own_blocks[0]["delta"]);
+            let base = DeltaSettings::from_block(&self.config.own_blocks.product["delta"]);
             if delta.accept_passive != base.accept_passive
-                || self.config.own_blocks[1]["delta"]
+                || self.config.own_blocks.device["delta"]
                     .get("accept_passive")
                     .is_some()
             {
@@ -450,21 +457,19 @@ impl Driver {
                     let counted = pushed
                         || (*channel == Channel::Passive
                             && self.delta.as_ref().is_some_and(|d| d.accept_passive));
-                    let keys: Vec<_> = self.assembly.bindings.keys().cloned().collect();
                     let mut reads = ReadCache::default();
-                    for name in keys {
-                        let b = self.assembly.bindings.get_mut(&name).unwrap();
+                    for (name, b) in &mut self.assembly.bindings {
                         let Some(p) = b.plan().and_then(|i| self.config.plans.get(i)) else {
                             continue;
                         };
                         if p.slot_kind == Some(SlotKind::Event) {
                             if pushed
                                 && let Some(event) = p.event(&self.codes, &changed, rules)?
-                                && items(&self.assembly.descriptor["props"][&name]["options"])
+                                && items(&self.assembly.descriptor["props"][name]["options"])
                                     .contains(&event[0])
                             {
                                 out.push(Output::Event {
-                                    prop: name,
+                                    prop: name.clone(),
                                     kind: s(&event[0]).into(),
                                 });
                             }
@@ -491,10 +496,10 @@ impl Driver {
                                 &self.config.plans,
                                 &self.codes,
                                 rules,
-                                &self.assembly.descriptor["props"][&name],
+                                &self.assembly.descriptor["props"][name],
                                 &mut reads,
                             )?;
-                            self.set(&name, v, &mut out);
+                            set_value(&mut self.values, name, v, &mut out);
                         }
                     }
                 }
@@ -900,4 +905,35 @@ fn config_switches(
         }
     }
     switches
+}
+
+fn set_value(values: &mut Table, prop: &str, value: V, out: &mut Vec<Output>) {
+    if value.is_null() {
+        if values.remove(prop).is_some() {
+            out.push(Output::Absent { prop: prop.into() });
+        }
+    } else if values.get(prop).is_none_or(|v| !eq(v, &value)) {
+        values.insert(prop, value.clone());
+        out.push(Output::Value {
+            prop: prop.into(),
+            value,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn override_levels_preserve_snapshot_format_and_reject_wrong_arity() {
+        let snapshot = json!([{"delta":{"accept_passive":true}}, {"cover":{"invert":true}}]);
+        let blocks: OwnBlocks = serde_json::from_value(snapshot.clone()).unwrap();
+        assert_eq!(blocks.product["delta"]["accept_passive"], true);
+        assert_eq!(blocks.device["cover"]["invert"], true);
+        assert_eq!(serde_json::to_value(blocks).unwrap(), snapshot);
+        for invalid in [json!([]), json!([{}]), json!([{}, {}, {}])] {
+            assert!(serde_json::from_value::<OwnBlocks>(invalid).is_err());
+        }
+    }
 }

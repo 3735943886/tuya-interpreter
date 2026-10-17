@@ -325,11 +325,13 @@ pub fn strategy_read(name: &str, raw: &V, ci: &V, rules: &V) -> Result<V, String
             ))
         }
         "ms_dp_syn_alg" => {
-            let Some(b) = b64(raw) else {
-                return Ok(json!([]));
-            };
+            let b = b64(raw).ok_or("invalid base64")?;
+            let (pairs, remainder) = b.as_chunks::<2>();
+            if !remainder.is_empty() {
+                return Err("incomplete synchronization record".into());
+            }
             let mut out = vec![];
-            for pair in b.as_chunks::<2>().0 {
+            for pair in pairs {
                 for bit in 0..8 {
                     if pair[1] >> bit & 1 != 0 {
                         out.push(((pair[0] & 127) as i64 - 1) * 8 + bit);
@@ -404,35 +406,49 @@ pub fn strategy_read(name: &str, raw: &V, ci: &V, rules: &V) -> Result<V, String
         "db_v1_daily" | "db_v1_month" | "db_v1_frozen" => {
             let b = b64(raw).ok_or("invalid base64")?;
             if name == "db_v1_frozen" {
-                return Ok(dumps(
-                    json!({"day":b.first().copied().unwrap_or(0),"hour":b.get(1).copied().unwrap_or(0)}),
-                ));
+                let [day, hour] = b.as_slice() else {
+                    return Err("invalid frozen payload length".into());
+                };
+                return Ok(dumps(json!({"day":day,"hour":hour})));
             }
+            let [start_major, start_minor, end_major, end_minor, total @ ..] = b.as_slice() else {
+                return Err("short energy payload".into());
+            };
+            let total: &[u8; 4] = total
+                .try_into()
+                .map_err(|_| "invalid energy payload length")?;
             let keys = if name == "db_v1_daily" {
                 ["startMonth", "startDay", "endMonth", "endDay"]
             } else {
                 ["startYear", "startMonth", "endYear", "endMonth"]
             };
             let mut o = json!({});
-            for (i, k) in keys.iter().enumerate() {
-                o[*k] = json!(b.get(i).copied().unwrap_or(0));
+            for (key, value) in
+                keys.into_iter()
+                    .zip([start_major, start_minor, end_major, end_minor])
+            {
+                o[key] = json!(value);
             }
-            o["electricTotal"] = json!(uint(b.get(4..8).unwrap_or(&[])) / 100.0);
+            o["electricTotal"] = json!(uint(total) / 100.0);
             Ok(dumps(o))
         }
         "db_v1_alarm" => {
             let b = b64(raw).ok_or("invalid base64")?;
             let mut out = vec![];
-            for rec in b.chunks(4) {
-                let id = rec.first().copied().unwrap_or(0).to_string();
+            let (records, remainder) = b.as_chunks::<4>();
+            if !remainder.is_empty() {
+                return Err("incomplete alarm record".into());
+            }
+            for rec in records {
+                let id = rec[0].to_string();
                 let row = &rules["meter_alarms"][&id];
                 if row.is_null() {
                     continue;
                 }
-                let mut o = json!({"alarmCode":row[0],"doAction":rec.get(1)==Some(&1)});
+                let mut o = json!({"alarmCode":row[0],"doAction":rec[1]==1});
                 if !row[1].is_null() {
                     let scale = n(&row[1]);
-                    let t = uint(rec.get(2..).unwrap_or(&[])) / 10f64.powi(scale as i32);
+                    let t = uint(&rec[2..]) / 10f64.powi(scale as i32);
                     o["threshold"] = json!(if scale > 0.0 {
                         if t.fract() == 0.0 {
                             format!("{t:.1}")
@@ -668,5 +684,48 @@ impl Adapter {
         if normalized(s(&spec["type"])) == "Integer" {
             self.remaps[code]["bounds"] = json!([v["min"], v["max"]]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_bytes(name: &str, bytes: &[u8]) -> Result<V, String> {
+        strategy_read(
+            name,
+            &json!(STANDARD.encode(bytes)),
+            &json!({}),
+            &json!({"meter_alarms":{"1":["overcurrent",1]}}),
+        )
+    }
+
+    #[test]
+    fn binary_records_reject_truncated_and_oversized_payloads() {
+        for name in ["db_v1_daily", "db_v1_month"] {
+            for len in 0..8 {
+                assert!(read_bytes(name, &vec![0; len]).is_err(), "{name}: {len}");
+            }
+            assert!(read_bytes(name, &[0; 9]).is_err());
+            let result = read_bytes(name, &[1, 2, 3, 4, 0, 0, 0, 123]).unwrap();
+            assert_eq!(parse(&result)["electricTotal"], json!(1.23));
+        }
+        for len in [0, 1, 3] {
+            assert!(read_bytes("db_v1_frozen", &vec![0; len]).is_err());
+        }
+        assert_eq!(
+            parse(&read_bytes("db_v1_frozen", &[12, 23]).unwrap()),
+            json!({"day":12,"hour":23})
+        );
+        for len in [1, 2, 3, 5, 6, 7] {
+            assert!(read_bytes("db_v1_alarm", &vec![1; len]).is_err());
+        }
+        assert_eq!(parse(&read_bytes("db_v1_alarm", &[]).unwrap()), json!([]));
+        assert_eq!(
+            parse(&read_bytes("db_v1_alarm", &[1, 1, 0, 123]).unwrap()),
+            json!([{"alarmCode":"overcurrent","doAction":true,"threshold":"12.3"}])
+        );
+        assert!(read_bytes("ms_dp_syn_alg", &[1]).is_err());
+        assert_eq!(read_bytes("ms_dp_syn_alg", &[1, 3]).unwrap(), json!([0, 1]));
     }
 }

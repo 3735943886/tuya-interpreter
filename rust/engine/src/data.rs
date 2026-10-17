@@ -113,10 +113,11 @@ pub fn codes(v: &V) -> Vec<String> {
         items(v).iter().map(|x| s(x).into()).collect()
     }
 }
+// i64::MAX rounds up to 2^63 in f64, so integer conversion excludes that upper bound.
 pub fn number(x: f64) -> V {
     if !x.is_finite() {
         V::Null
-    } else if x.fract() == 0.0 && x.abs() < 9.22e18 {
+    } else if x.fract() == 0.0 && x >= i64::MIN as f64 && x < -(i64::MIN as f64) {
         json!(x as i64)
     } else {
         json!(x)
@@ -353,7 +354,7 @@ pub fn patch_op(device: &mut V, dpmap: &mut V, op: &V) {
                     }
                     device[t][code] = spec;
                 } else {
-                    device[t].as_object_mut().unwrap().remove(code);
+                    remove(&mut device[t], code);
                 }
             }
             let id = if op["dpid"].is_string() {
@@ -368,10 +369,10 @@ pub fn patch_op(device: &mut V, dpmap: &mut V, op: &V) {
         }
         "RemoveDp" => {
             for t in ["function", "status_range", "status"] {
-                device[t].as_object_mut().unwrap().remove(code);
+                remove(&mut device[t], code);
             }
             let id = op["dpid"].to_string();
-            dpmap.as_object_mut().unwrap().remove(id.trim_matches('"'));
+            remove(dpmap, id.trim_matches('"'));
         }
         _ => {}
     }
@@ -434,4 +435,21 @@ pub fn cover_words(role: &Role, names: &V, rules: &V) -> V {
         .or_else(|| maps.first().map(|name| &rules["maps"][name]))
         .cloned()
         .unwrap_or(V::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn number_preserves_integer_boundaries_without_saturating() {
+        let upper = -(i64::MIN as f64);
+        assert_eq!(number(i64::MIN as f64).as_i64(), Some(i64::MIN));
+        let below_upper = f64::from_bits(upper.to_bits() - 1);
+        assert_eq!(number(below_upper).as_i64(), Some(below_upper as i64));
+        assert!(number(upper).is_f64());
+        assert!(number(f64::from_bits((i64::MIN as f64).to_bits() + 1)).is_f64());
+        assert_eq!(number(1.5), json!(1.5));
+        assert_eq!(number(f64::NAN), V::Null);
+    }
 }

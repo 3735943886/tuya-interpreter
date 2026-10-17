@@ -10,6 +10,11 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tuya_interpreter::{Channel, Driver, DriverOptions, Input, Output, RulePack, merge_rules};
 
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TUYA_PORT: u16 = 6668;
+const SAMPLE_PORT: u16 = 16668;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
@@ -87,6 +92,9 @@ fn version(value: &str) -> Result<Version> {
 
 /// Commands are fire-and-forget in rustuya; their replies arrive on a listener.
 async fn receive_dps(events: &mut Listener, expected: Option<&Value>) -> Result<Value> {
+    let expected = expected
+        .map(|value| value.as_object().ok_or("Expected DPS must be an object"))
+        .transpose()?;
     let receive = async {
         loop {
             match events.recv().await {
@@ -107,8 +115,6 @@ async fn receive_dps(events: &mut Listener, expected: Option<&Value>) -> Result<
                         }
                         if expected.is_some_and(|expected| {
                             expected
-                                .as_object()
-                                .unwrap()
                                 .iter()
                                 .any(|(dp, value)| dps.get(dp) != Some(value))
                         }) {
@@ -124,7 +130,7 @@ async fn receive_dps(events: &mut Listener, expected: Option<&Value>) -> Result<
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(5), receive).await?
+    tokio::time::timeout(RESPONSE_TIMEOUT, receive).await?
 }
 
 struct Session {
@@ -207,9 +213,12 @@ impl Session {
         Ok(())
     }
 
-    fn show(&self) {
+    fn show(&self) -> Result<()> {
         println!("Property / type / access / value / unit");
-        for (prop, spec) in self.driver.descriptor()["props"].as_object().unwrap() {
+        let props = self.driver.descriptor()["props"]
+            .as_object()
+            .ok_or("Descriptor props must be an object")?;
+        for (prop, spec) in props {
             let access = if spec["rw"] == true {
                 "read/write"
             } else {
@@ -228,13 +237,23 @@ impl Session {
                 }
             }
         }
+        Ok(())
     }
 
-    async fn run(&mut self) -> Result<()> {
-        self.device.wait_connected(Duration::from_secs(10)).await?;
+    // Own the session so cancellation or unwinding drops the final Device handle.
+    // rustuya stops its actor when that handle's shutdown sender is dropped.
+    async fn run(mut self) -> Result<()> {
+        let result = self.run_inner().await;
+        let _ = self.handle(Input::Disconnected).await;
+        self.device.close().await;
+        result
+    }
+
+    async fn run_inner(&mut self) -> Result<()> {
+        self.device.wait_connected(CONNECT_TIMEOUT).await?;
         self.handle(Input::Connected).await?;
         self.read().await?;
-        self.show();
+        self.show()?;
         println!(
             "Commands: props, set <property> <JSON>, toggle [property], on, off, read, describe, quit"
         );
@@ -253,9 +272,9 @@ impl Session {
                 "quit" | "exit" | "q" => break,
                 "read" => {
                     self.read().await?;
-                    self.show();
+                    self.show()?;
                 }
-                "props" | "help" => self.show(),
+                "props" | "help" => self.show()?,
                 "set" => {
                     if let (Some(prop), Some(raw)) = (parts.next(), parts.next()) {
                         match serde_json::from_str(raw.trim()) {
@@ -266,7 +285,7 @@ impl Session {
                                 })
                                 .await?;
                                 self.read().await?;
-                                self.show();
+                                self.show()?;
                             }
                             Err(_) => println!("Value must be JSON, e.g. true or 23.5"),
                         }
@@ -317,7 +336,9 @@ impl Session {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("Example directory needs a parent")?;
     let sample = args.file.is_none();
     let metadata = load_device(
         &args
@@ -370,19 +391,58 @@ async fn main() -> Result<()> {
         key.into_bytes(),
     )
     .address(ip)
-    .port(args.port.unwrap_or(if sample { 16668 } else { 6668 }))
+    .port(
+        args.port
+            .unwrap_or(if sample { SAMPLE_PORT } else { TUYA_PORT }),
+    )
     .version(version(&wire_version)?)
     .auto_reconnect(false)
     .connect()?;
-    let mut session = Session {
+    let session = Session {
         driver,
         device,
         started: Instant::now(),
         property: args.property,
     };
-    let result = session.run().await;
-    // Close transport on EOF, quit, Ctrl-C and failures.
-    let _ = session.handle(Input::Disconnected).await;
-    session.device.close().await;
-    result
+    session.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelling_session_stops_transport_actor() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let metadata = load_device(&examples.join("devices/toggle-switch.json"), None).unwrap();
+        let rules = load_rules(&examples.join("../rules/builtin")).unwrap();
+        let driver = Driver::new(metadata, rules, DriverOptions::default()).unwrap();
+        // Keep the port bound so the actor cannot accidentally reach a real device.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let device = Device::builder("cancel-test", b"0123456789abcdef".to_vec())
+            .address("127.0.0.1")
+            .port(listener.local_addr().unwrap().port())
+            .version(Version::V3_5)
+            .auto_reconnect(false)
+            .connect()
+            .unwrap();
+        let mut events = device.listener();
+        let session = Session {
+            driver,
+            device,
+            started: Instant::now(),
+            property: "switch_1".into(),
+        };
+        let mut run = Box::pin(session.run());
+        tokio::select! {
+            result = &mut run => panic!("session ended before cancellation: {result:?}"),
+            _ = tokio::task::yield_now() => {},
+        }
+        drop(run);
+        tokio::time::timeout(RESPONSE_TIMEOUT, async {
+            while events.recv().await.is_some() {}
+        })
+        .await
+        .expect("dropping the session must stop the actor and close its event stream");
+    }
 }
