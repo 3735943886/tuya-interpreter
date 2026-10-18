@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tuya_interpreter::{
-    Channel, Driver, DriverOptions, EngineError, Input, Output, RulePack, merge_rules,
+    Channel, Driver, DriverOptions, EngineError, HostEnv, Input, Output, RulePack, merge_rules,
 };
 
 fn pack() -> Arc<RulePack> {
@@ -19,10 +19,7 @@ fn device() -> Value {
 }
 
 fn options() -> DriverOptions {
-    DriverOptions {
-        dpmap: json!({"1":"switch_1"}),
-        ..DriverOptions::default()
-    }
+    DriverOptions::new().dpmap(json!({"1":"switch_1"}))
 }
 
 #[test]
@@ -53,11 +50,10 @@ fn packs_are_owned_by_callers_and_drivers_are_independent() {
 
 #[test]
 fn failure_does_not_commit_and_snapshots_check_rules() {
-    let mut opts = options();
-    opts.overrides = json!({"p":{"converters":{"declarative":{
+    let opts = options().overrides(json!({"p":{"converters":{"declarative":{
         "props":{"count":{"type":"number"}}, "initial_state":{"count":0},
         "update":[{"set":"state.count","value":1},{"emit":"count","value":{"op":"unknown"}}]
-    }}}});
+    }}}}));
     let rules = pack();
     let mut driver = Driver::new(device(), rules.clone(), opts).unwrap();
     driver.handle(0.0, Input::Connected).unwrap();
@@ -270,4 +266,32 @@ fn snapshots_with_misshapen_tables_or_settings_are_rejected() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn option_setters_override_defaults_and_errors_expose_messages() {
+    let defaults = serde_json::to_value(DriverOptions::new()).unwrap();
+    assert_eq!(defaults["use_quirks"], true);
+    assert_eq!(defaults.get("env"), None);
+    let options = DriverOptions::new()
+        .env(HostEnv::new().temperature_unit("F"))
+        .use_quirks(false)
+        .allow_hazardous(true)
+        .expose_unused(true)
+        .device_settings(true);
+    let value = serde_json::to_value(options).unwrap();
+    assert_eq!(value["env"]["temperature_unit"], "F");
+    for (key, expected) in [
+        ("use_quirks", false),
+        ("allow_hazardous", true),
+        ("expose_unused", true),
+        ("device_settings", true),
+    ] {
+        assert_eq!(value[key], expected, "{key}");
+    }
+    let error = EngineError::Unsupported("write".into());
+    assert_eq!(
+        (error.message(), error.to_string().as_str()),
+        ("write", "unsupported: write")
+    );
 }

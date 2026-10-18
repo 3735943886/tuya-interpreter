@@ -1,5 +1,6 @@
 use crate::EngineError;
 use crate::data::*;
+use crate::error::OrEval;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -553,14 +554,21 @@ pub fn strategy_write(name: &str, v: &V, ci: &V) -> Result<V, EngineError> {
                 } {
                     let parts: Vec<_> = s(&t[k]).split(':').collect();
                     if parts.len() != 2 {
-                        return Err("invalid time".into());
+                        return Err(EngineError::eval("invalid time"));
                     }
-                    let hours = parts[0].parse::<u16>().map_err(|_| "invalid time")?;
-                    let minute = parts[1].parse::<u16>().map_err(|_| "invalid time")?;
+                    let hours = parts[0]
+                        .parse::<u16>()
+                        .map_err(|_| "invalid time")
+                        .or_eval()?;
+                    let minute = parts[1]
+                        .parse::<u16>()
+                        .map_err(|_| "invalid time")
+                        .or_eval()?;
                     let minutes = hours
                         .checked_mul(60)
                         .and_then(|v| v.checked_add(minute))
-                        .ok_or("invalid time")?;
+                        .ok_or("invalid time")
+                        .or_eval()?;
                     b.extend(minutes.to_be_bytes());
                 }
             }

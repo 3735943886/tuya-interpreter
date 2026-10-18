@@ -179,7 +179,8 @@ use tuya_interpreter::{Channel, Driver, DriverOptions, Input, RulePack};
 
 // The host loads and decodes both values.
 let rules = Arc::new(RulePack::new(decoded_rules)?);
-let mut driver = Driver::new(decoded_device, rules.clone(), DriverOptions::default())?;
+let options = DriverOptions::new().dpmap(json!({"1": "switch_1"}));
+let mut driver = Driver::new(decoded_device, rules.clone(), options)?;
 let descriptor_effects = driver.handle(0.0, Input::Connected)?;
 let effects = driver.handle(1.0, Input::Message {
     channel: Channel::Active,
@@ -190,6 +191,12 @@ let effects = driver.handle(1.0, Input::Message {
 `Input`, `Output`, `Channel` and `RejectCode` use the same serde tags as the JSON ABI. DP kinds, motion states and
 state-source modes are enums inside the engine. `EngineError` distinguishes invalid rules, devices, overrides and
 inputs, evaluation failures, unsupported writes and invalid values; callers match variants rather than error text.
+`EngineError::message` returns the text without its category prefix.
+
+`Input`, `Output`, `EngineError` and the other public enums are `#[non_exhaustive]`, so matches need a `_` arm;
+new variants, such as further IL reject codes, can arrive in a patch release. `DriverOptions` and `HostEnv` are
+built with chained setters from `new()` (`DriverOptions::new().env(HostEnv::new().temperature_unit("F"))`), so new
+options do not break existing callers. `RuleComposition` fields remain readable.
 Device schemas, descriptors and rule expressions remain JSON so a new declarative platform needs no Rust type change.
 
 `Driver::descriptor`, `values`, `dps`, `linked`, `synced`, `timers`, `settings_block` and `carry` expose the host-facing

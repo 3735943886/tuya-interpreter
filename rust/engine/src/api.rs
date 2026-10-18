@@ -1,3 +1,4 @@
+use crate::error::OrEval;
 use crate::protocol::SlotKind;
 use crate::runtime::{fingerprint, validated};
 use crate::{Driver as LiveDriver, DriverOptions, EngineError, Input, RulePack};
@@ -147,8 +148,9 @@ fn install(input: &V) -> Result<V, EngineError> {
     Ok(json!(true))
 }
 pub fn request(input: &V) -> Result<V, EngineError> {
-    let op: Op =
-        serde_json::from_value(input["op"].clone()).map_err(|_| "unknown engine operation")?;
+    let op: Op = serde_json::from_value(input["op"].clone())
+        .map_err(|_| "unknown engine operation")
+        .or_eval()?;
     match op {
         Op::Plain(op) => plain(op, input),
         Op::Ruled(op) => ruled(op, input, &Rules::resolve(input)?),
@@ -345,7 +347,10 @@ fn ruled(op: Ruled, input: &V, pack: &Rules) -> Result<V, EngineError> {
             if changed.is_null() {
                 write = true
             } else if p.slot_kind == Some(SlotKind::Event) {
-                if let Some(event) = p.event(&input["status"], &codes(changed), rules)? {
+                if let Some(event) = p
+                    .event(&input["status"], &codes(changed), rules)
+                    .or_eval()?
+                {
                     fire = event;
                     write = true;
                 }

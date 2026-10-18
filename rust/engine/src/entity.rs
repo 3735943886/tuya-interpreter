@@ -7,6 +7,7 @@ use crate::DpKind;
 use crate::EngineError;
 use crate::adapter::{Adapter, DpEntry};
 use crate::data::*;
+use crate::error::OrEval;
 use crate::expr::{Effects, Flow, Restore, Scope, execute, target, text};
 use crate::plan::Plan;
 use crate::protocol::SlotKind;
@@ -104,29 +105,33 @@ impl Effects for Build<'_> {
     fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError> {
         if let Some(name) = stmt.get("role") {
             let name = s(name).to_string();
-            let candidates = codes(&scope.eval(&stmt["codes"])?);
+            let candidates = codes(&scope.eval(&stmt["codes"]).or_eval()?);
             let prefer_function = stmt["prefer"] == "function";
             let mut found = None;
-            for kind in codes(&scope.eval(&stmt["types"])?) {
-                found = resolve(self.device, &candidates, &kind, prefer_function)?;
+            for kind in codes(&scope.eval(&stmt["types"]).or_eval()?) {
+                found = resolve(self.device, &candidates, &kind, prefer_function).or_eval()?;
                 if found.is_some() {
                     break;
                 }
             }
             match found {
                 Some(role) => {
-                    scope.assign(&["roles".into(), name.clone()], role.view())?;
-                    scope.assign(
-                        &["values".into(), name.clone()],
-                        role.read(&self.device["status"]),
-                    )?;
+                    scope
+                        .assign(&["roles".into(), name.clone()], role.view())
+                        .or_eval()?;
+                    scope
+                        .assign(
+                            &["values".into(), name.clone()],
+                            role.read(&self.device["status"]),
+                        )
+                        .or_eval()?;
                     self.roles.insert(name, role);
                 }
                 None if stmt["required"] == true => return Ok(Flow::Stop),
                 None => {}
             }
         } else if let Some(cond) = stmt.get("require") {
-            if !truth(&scope.eval(cond)?) {
+            if !truth(&scope.eval(cond).or_eval()?) {
                 return Ok(Flow::Stop);
             }
         } else if let Some(path) = stmt.get("set") {
@@ -135,24 +140,28 @@ impl Effects for Build<'_> {
                 .first()
                 .is_some_and(|f| ASSIGNABLE.contains(&f.as_str()))
             {
-                return Err(
-                    format!("a variant can assign only {ASSIGNABLE:?}, not {path:?}").into(),
-                );
+                return Err(EngineError::eval(format!(
+                    "a variant can assign only {ASSIGNABLE:?}, not {path:?}"
+                )));
             }
             if let Some(merge) = stmt.get("merge") {
-                for (k, v) in obj(&scope.eval(merge)?) {
-                    scope.assign(&[path.clone(), vec![k]].concat(), v)?;
+                for (k, v) in obj(&scope.eval(merge).or_eval()?) {
+                    scope
+                        .assign(&[path.clone(), vec![k]].concat(), v)
+                        .or_eval()?;
                 }
             } else {
-                let value = scope.eval(&stmt["value"])?;
-                scope.assign(&path, value)?;
+                let value = scope.eval(&stmt["value"]).or_eval()?;
+                scope.assign(&path, value).or_eval()?;
             }
         } else if let Some(cond) = stmt.get("assert") {
-            if !truth(&scope.eval(cond)?) {
-                return Err(text(&scope.eval(&stmt["error"])?).into());
+            if !truth(&scope.eval(cond).or_eval()?) {
+                return Err(EngineError::eval(text(
+                    &scope.eval(&stmt["error"]).or_eval()?,
+                )));
             }
         } else {
-            return Err(format!("unknown spec statement {stmt}").into());
+            return Err(EngineError::eval(format!("unknown spec statement {stmt}")));
         }
         Ok(Flow::Next)
     }
@@ -225,14 +234,14 @@ fn attempt<'a>(
 ) -> Result<Option<Plan>, EngineError> {
     let variant = shared(entity.rules, variant);
     if let Some(when) = variant.get("when")
-        && !truth(&scope.eval(when)?)
+        && !truth(&scope.eval(when).or_eval()?)
     {
         return Ok(None);
     }
     if let Some(group) = variant.get("variants") {
         let group = shared(entity.rules, group);
         let list = match variant.get("each") {
-            Some(e) => arr(&scope.eval(e)?),
+            Some(e) => arr(&scope.eval(e).or_eval()?),
             None => vec![V::Null],
         };
         let name = variant.get("as").map(s).unwrap_or("item");
@@ -337,17 +346,21 @@ struct Commands<'p> {
 impl Effects for Commands<'_> {
     fn exec(&mut self, stmt: &V, scope: &mut Scope) -> Result<Flow, EngineError> {
         if let Some(cmd) = stmt.get("command") {
-            let role = scope.eval(&cmd["role"])?;
-            let value = scope.eval(&cmd["value"])?;
+            let role = scope.eval(&cmd["role"]).or_eval()?;
+            let value = scope.eval(&cmd["value"]).or_eval()?;
             self.out.push(self.plan.cmd(s(&role), &value)?);
         } else if let Some(send) = stmt.get("send") {
-            let code = scope.eval(&send["code"])?;
-            let value = scope.eval(&send["value"])?;
+            let code = scope.eval(&send["code"]).or_eval()?;
+            let value = scope.eval(&send["value"]).or_eval()?;
             self.out.push(json!({"code":code,"value":value}));
         } else if let Some(message) = stmt.get("fail") {
-            return Err(EngineError::InvalidValue(text(&scope.eval(message)?)));
+            return Err(EngineError::InvalidValue(text(
+                &scope.eval(message).or_eval()?,
+            )));
         } else {
-            return Err(format!("unknown action statement {stmt}").into());
+            return Err(EngineError::eval(format!(
+                "unknown action statement {stmt}"
+            )));
         }
         Ok(Flow::Next)
     }
@@ -368,7 +381,7 @@ pub fn act(
         .get(action)
         .or_else(|| actions.get("*"))
         .ok_or_else(|| EngineError::Unsupported("no write path".into()))?;
-    let current = state(plan, status, 0.0, rules)?;
+    let current = state(plan, status, 0.0, rules).or_eval()?;
     let mut scope = entity
         .scope(plan, status)
         .with("action", json!(action))
@@ -420,7 +433,7 @@ pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<()
             s(&rules["unused"]["role"]).into(),
             Role {
                 code: code.clone(),
-                kind: DpKind::parse(kind).ok_or("invalid dp kind")?,
+                kind: DpKind::parse(kind).ok_or("invalid dp kind").or_eval()?,
                 spec,
                 report_type: e["report_type"].clone(),
             },
@@ -433,7 +446,7 @@ pub fn unused(d: &V, a: &Adapter, plans: &mut Vec<Plan>, rules: &V) -> Result<()
             .with("rw", json!(d["function"].get(code).is_some()));
         let mut chosen = None;
         for variant in items(&rules["unused"]["variants"]) {
-            if truth(&scope.eval(&variant["when"])?) {
+            if truth(&scope.eval(&variant["when"]).or_eval()?) {
                 chosen = Some(variant);
                 break;
             }

@@ -2,6 +2,7 @@
 //! Programs are data: no eval, filesystem, networking, imports or clock reads.
 use crate::EngineError;
 use crate::data::*;
+use crate::error::OrEval;
 use crate::expr::{Effects, Flow, Scope, execute, target};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -29,16 +30,16 @@ impl Effects for MachineEffects {
         if let Some(path) = stmt.get("set") {
             let parts = target(path);
             if parts.first().is_none_or(|p| p != "state") {
-                return Err("rules can assign only state slots".into());
+                return Err(EngineError::eval("rules can assign only state slots"));
             }
-            let value = scope.eval(&stmt["value"])?;
-            let state = scope.get_mut("state").ok_or("no state")?;
+            let value = scope.eval(&stmt["value"]).or_eval()?;
+            let state = scope.get_mut("state").ok_or("no state").or_eval()?;
             set(state, &parts[1..], value);
         } else if let Some(prop) = stmt.get("emit") {
-            let value = scope.eval(&stmt["value"])?;
+            let value = scope.eval(&stmt["value"]).or_eval()?;
             self.values.insert(s(prop).into(), value);
         } else if let Some(name) = stmt.get("timer") {
-            let after = scope.eval(&stmt["after"])?;
+            let after = scope.eval(&stmt["after"]).or_eval()?;
             let after = if after.is_null() {
                 None
             } else {
@@ -46,16 +47,17 @@ impl Effects for MachineEffects {
                     after
                         .as_f64()
                         .filter(|n| n.is_finite() && *n >= 0.0)
-                        .ok_or("timer delay must be a finite nonnegative number or null")?,
+                        .ok_or("timer delay must be a finite nonnegative number or null")
+                        .or_eval()?,
                 )
             };
             self.timers.insert(s(name).into(), after);
         } else if let Some(send) = stmt.get("send") {
-            let code = scope.eval(&send["code"])?;
-            let value = scope.eval(&send["value"])?;
+            let code = scope.eval(&send["code"]).or_eval()?;
+            let value = scope.eval(&send["value"]).or_eval()?;
             self.commands.push(json!({"code":code,"value":value}));
         } else {
-            return Err("unknown rule statement".into());
+            return Err(EngineError::eval("unknown rule statement"));
         }
         Ok(Flow::Next)
     }
@@ -111,7 +113,9 @@ impl Machine {
             })?;
             *value = crate::assembly::il_value(value.take(), definition);
             if !value.is_null() && !crate::driver::overrides::value_fits(value, definition) {
-                return Err(format!("converter value does not fit property {prop}").into());
+                return Err(EngineError::eval(format!(
+                    "converter value does not fit property {prop}"
+                )));
             }
         }
         self.state = state;

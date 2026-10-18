@@ -6,6 +6,7 @@
 use crate::EngineError;
 use crate::adapter::{b64, electricity, hexbytes, hsv_rgb, rgb_hsv};
 use crate::data::*;
+use crate::error::OrEval;
 use serde_json::{Map, Value as V, json};
 use std::borrow::Cow;
 use std::ops::{Deref, DerefMut};
@@ -720,17 +721,18 @@ fn run(
     depth: usize,
 ) -> Result<Flow, EngineError> {
     if depth >= DEPTH_LIMIT {
-        return Err("rule nesting limit exceeded".into());
+        return Err(EngineError::eval("rule nesting limit exceeded"));
     }
     if !program.is_null() && !program.is_array() {
-        return Err("rule program must be an array".into());
+        return Err(EngineError::eval("rule program must be an array"));
     }
     for stmt in items(program) {
         *budget = budget
             .checked_sub(1)
-            .ok_or("rule instruction limit exceeded")?;
+            .ok_or("rule instruction limit exceeded")
+            .or_eval()?;
         let flow = if let Some(cond) = stmt.get("if") {
-            let branch = if truth(&scope.eval(cond)?) {
+            let branch = if truth(&scope.eval(cond).or_eval()?) {
                 &stmt["then"]
             } else {
                 &stmt["else"]
@@ -740,10 +742,11 @@ fn run(
             let program = scope
                 .get("rules")
                 .map(|rules| rules["templates"][s(name)].clone())
-                .ok_or("templates need a rule pack")?;
+                .ok_or("templates need a rule pack")
+                .or_eval()?;
             run(&program, scope, fx, budget, depth + 1)?
         } else if let Some(name) = stmt.get("let") {
-            let value = scope.eval(&stmt["value"])?;
+            let value = scope.eval(&stmt["value"]).or_eval()?;
             scope.set(s(name), value);
             Flow::Next
         } else {

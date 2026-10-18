@@ -4,6 +4,7 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Input {
     Connected,
     Disconnected,
@@ -27,6 +28,7 @@ pub enum Input {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Channel {
     Active,
     Passive,
@@ -35,6 +37,7 @@ pub enum Channel {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Output {
     Descriptor {
         desc: Value,
@@ -73,12 +76,14 @@ pub enum Output {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SendChannel {
     Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RejectCode {
     UnknownProperty,
     ReadOnly,
@@ -91,6 +96,7 @@ pub enum RejectCode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DpKind {
     Integer,
     Boolean,
@@ -129,6 +135,7 @@ impl DpKind {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum StateSource {
     Control,
     #[default]
@@ -138,6 +145,7 @@ pub enum StateSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MotionState {
     Open,
     Closed,

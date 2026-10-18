@@ -1,6 +1,7 @@
 use crate::DpKind;
 use crate::StateSource;
 use crate::entity;
+use crate::error::OrEval;
 use crate::machine::{Machine, MachineEffects, Method};
 use crate::protocol::SlotKind;
 use crate::{Channel, DriverOptions, EngineError, Input, Output, RejectCode, SendChannel};
@@ -136,7 +137,7 @@ impl Driver {
         {
             entity::unused(&d, &adapter, &mut plans, rules)?;
         }
-        let mut assembly = assemble(&d, &mut plans, &info, allow, rules)?;
+        let mut assembly = assemble(&d, &mut plans, &info, allow, rules).or_eval()?;
         let mut covers = make_covers(&assembly, &plans, &block, settings, rules);
         let choices: Vec<_> = covers.iter().map(|c| c.position_choice).collect();
         // A cover that takes its position from the target is classified again without its
@@ -144,7 +145,7 @@ impl Driver {
         let selected = match without_target_positions(&d, &covers) {
             Some(selected) => {
                 plans = entity::classify(&selected, &env, rules, &V::Null)?;
-                assembly = assemble(&selected, &mut plans, &info, allow, rules)?;
+                assembly = assemble(&selected, &mut plans, &info, allow, rules).or_eval()?;
                 covers = make_covers(&assembly, &plans, &block, settings, rules);
                 selected
             }
@@ -464,7 +465,8 @@ impl Driver {
                         };
                         if p.slot_kind == Some(SlotKind::Event) {
                             if pushed
-                                && let Some(event) = p.event(&self.codes, &changed, rules)?
+                                && let Some(event) =
+                                    p.event(&self.codes, &changed, rules).or_eval()?
                                 && items(&self.assembly.descriptor["props"][name]["options"])
                                     .contains(&event[0])
                             {
@@ -492,13 +494,15 @@ impl Driver {
                             update = added || first;
                         }
                         if update {
-                            let v = b.read(
-                                &self.config.plans,
-                                &self.codes,
-                                rules,
-                                &self.assembly.descriptor["props"][name],
-                                &mut reads,
-                            )?;
+                            let v = b
+                                .read(
+                                    &self.config.plans,
+                                    &self.codes,
+                                    rules,
+                                    &self.assembly.descriptor["props"][name],
+                                    &mut reads,
+                                )
+                                .or_eval()?;
                             set_value(&mut self.values, name, v, &mut out);
                         }
                     }

@@ -24,6 +24,8 @@ impl RulePack {
     }
 }
 
+/// The result of [`merge_rules`]. More fields may be added in later releases.
+#[non_exhaustive]
 pub struct RuleComposition {
     pub pack: RulePack,
     pub sources: Vec<String>,
@@ -69,8 +71,8 @@ pub(crate) fn fingerprint(rules: &Value) -> String {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostEnv {
-    pub temperature_unit: String,
-    pub allowed_units: Value,
+    pub(crate) temperature_unit: String,
+    pub(crate) allowed_units: Value,
 }
 impl Default for HostEnv {
     fn default() -> Self {
@@ -80,18 +82,34 @@ impl Default for HostEnv {
         }
     }
 }
+/// Host preferences, built from [`HostEnv::new`]; unset fields keep their defaults.
+impl HostEnv {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Temperature unit the host displays, such as `"C"` (default) or `"F"`.
+    pub fn temperature_unit(mut self, unit: impl Into<String>) -> Self {
+        self.temperature_unit = unit.into();
+        self
+    }
+    /// Units the host accepts, as `{platform: {device_class: [unit, ...]}}`.
+    pub fn allowed_units(mut self, units: Value) -> Self {
+        self.allowed_units = units;
+        self
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DriverOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<HostEnv>,
-    pub use_quirks: bool,
-    pub dpmap: Value,
-    pub allow_hazardous: bool,
-    pub expose_unused: bool,
-    pub overrides: Value,
-    pub device_settings: bool,
+    pub(crate) env: Option<HostEnv>,
+    pub(crate) use_quirks: bool,
+    pub(crate) dpmap: Value,
+    pub(crate) allow_hazardous: bool,
+    pub(crate) expose_unused: bool,
+    pub(crate) overrides: Value,
+    pub(crate) device_settings: bool,
 }
 impl Default for DriverOptions {
     fn default() -> Self {
@@ -104,6 +122,47 @@ impl Default for DriverOptions {
             overrides: json!({}),
             device_settings: false,
         }
+    }
+}
+/// Driver construction options, built from [`DriverOptions::new`]; unset fields keep their defaults.
+impl DriverOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Host preferences; without one, the rule pack's host units apply with Celsius.
+    pub fn env(mut self, env: HostEnv) -> Self {
+        self.env = Some(env);
+        self
+    }
+    /// Apply product quirks from the rule pack (default `true`).
+    pub fn use_quirks(mut self, enabled: bool) -> Self {
+        self.use_quirks = enabled;
+        self
+    }
+    /// Host-known DP ID to code mapping, as a JSON object such as `{"1": "switch_1"}`.
+    pub fn dpmap(mut self, dpmap: Value) -> Self {
+        self.dpmap = dpmap;
+        self
+    }
+    /// Make hazardous controls such as garage and gate openers writable (default `false`).
+    pub fn allow_hazardous(mut self, enabled: bool) -> Self {
+        self.allow_hazardous = enabled;
+        self
+    }
+    /// Expose DPs the rules did not claim as generic properties (default `false`).
+    pub fn expose_unused(mut self, enabled: bool) -> Self {
+        self.expose_unused = enabled;
+        self
+    }
+    /// User overrides keyed by product ID or device ID.
+    pub fn overrides(mut self, overrides: Value) -> Self {
+        self.overrides = overrides;
+        self
+    }
+    /// Expose device settings; writes return `SettingsChanged` for the host to save (default `false`).
+    pub fn device_settings(mut self, enabled: bool) -> Self {
+        self.device_settings = enabled;
+        self
     }
 }
 

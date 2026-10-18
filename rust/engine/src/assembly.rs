@@ -2,6 +2,7 @@
 use crate::EngineError;
 use crate::data::*;
 use crate::entity::{Entity, shared};
+use crate::error::OrEval;
 use crate::expr::{Scope, text};
 use crate::plan::Plan;
 use indexmap::IndexMap;
@@ -308,14 +309,15 @@ impl Binding {
                 ])
             }
             Source::Layout { plan, row } => {
-                let (p, row, entity) = layout(plans, *plan, *row, rules)?;
-                let state = p.read(st, self.total, rules)?;
+                let (p, row, entity) = layout(plans, *plan, *row, rules).or_eval()?;
+                let state = p.read(st, self.total, rules).or_eval()?;
                 let call = entity
                     .scope(p, st)
                     .with("state", state)
                     .with("definition", definition)
                     .with("value", value)
-                    .eval(&row["write"])?;
+                    .eval(&row["write"])
+                    .or_eval()?;
                 p.write(s(&call["action"]), &call["args"], st, rules)
             }
             _ => Err(EngineError::Unsupported("no write path".into())),
