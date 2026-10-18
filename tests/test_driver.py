@@ -22,7 +22,9 @@ from tuya_interpreter import (
 )
 
 ILDEVICE = pathlib.Path(os.environ.get("ILDEVICE", pathlib.Path(__file__).resolve().parents[2] / "ildevice"))   # the spec repo
-needs_spec = pytest.mark.skipif(not ILDEVICE.is_dir(), reason=f"no ildevice checkout at {ILDEVICE} (set ILDEVICE)")
+# An explicit ILDEVICE (as in CI) must exist: a missing checkout fails rather than skips.
+needs_spec = pytest.mark.skipif("ILDEVICE" not in os.environ and not ILDEVICE.is_dir(),
+                                reason=f"no ildevice checkout at {ILDEVICE} (set ILDEVICE)")
 
 
 def test_light_realtime_and_commands():

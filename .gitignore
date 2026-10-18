@@ -19,3 +19,4 @@ Cargo.lock
 # Local project notes for coding agents.
 AGENTS.md
 agent.md
+.ildevice/

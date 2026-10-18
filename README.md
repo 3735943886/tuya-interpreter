@@ -290,6 +290,24 @@ See [native Rust API](docs/rust-engine.md#native-rust-api),
 [C ABI](docs/rust-engine.md#c-abi), [other languages](docs/rust-engine.md#another-language)
 and [local performance measurements](docs/performance.md).
 
+## Versioning and the IL specification
+
+Descriptors declare the [ildevice](https://github.com/3735943886/ildevice) version they follow
+(`"il": 0`). The IL specification is still a draft at version 0, so its contract can change before
+IL 1. Each release is tested against the specification commit pinned in
+[`tests/ildevice.ref`](tests/ildevice.ref).
+
+tuya-interpreter follows SemVer. While it is at `0.x`:
+
+- **Minor release** (`0.1` → `0.2`): output changes that existing consumers may not handle, such as
+  removing or renaming a property, role or field, or changing a value's type, unit or meaning.
+  This includes adopting a breaking IL draft change. Breaking Rust API changes are minor releases too.
+- **Patch release** (`0.1.0` → `0.1.1`): additions that IL consumers must already tolerate (new
+  properties, roles, event kinds and reject codes), new device support, rule fixes and bug fixes.
+  Moving the pinned specification to a commit with only additive changes is a patch release.
+
+Rule fixes can change how a particular device is classified. Such changes are listed in the release notes.
+
 ## Development and validation
 
 ```sh
@@ -306,7 +324,8 @@ cover positions keep the device's direction rather than HA's mirrored representa
 
 SDK adapter comparisons require `tuya-device-sharing-sdk==0.2.15` from the test extras.
 IL conformance tests use the specification checkout at `../ildevice` or `$ILDEVICE` and are skipped
-when absent. Chain tests require the IL host's `ildevice.core` planner and are not collected without it.
+when neither exists. CI checks out the commit pinned in `tests/ildevice.ref` and sets `ILDEVICE`;
+an `ILDEVICE` path that does not exist fails the tests rather than skipping them. Chain tests require the IL host's `ildevice.core` planner and are not collected without it.
 
 | Path | Contents |
 | --- | --- |

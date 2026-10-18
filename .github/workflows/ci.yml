@@ -17,6 +17,15 @@ jobs:
         python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v7
+      - name: Read pinned ildevice specification
+        id: spec
+        shell: bash
+        run: echo "ref=$(tr -d '[:space:]' < tests/ildevice.ref)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: 3735943886/ildevice
+          ref: ${{ steps.spec.outputs.ref }}
+          path: .ildevice
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -27,6 +36,8 @@ jobs:
       - run: pip install -e ".[test]" tuyamock==0.0.6
       - run: pip install ruff==0.16.8 && ruff check src tests hatch_version.py
       - run: python -m pytest -q
+        env:
+          ILDEVICE: ${{ github.workspace }}/.ildevice
 
   portable:
     # The engine as WebAssembly, driven from JavaScript with the same rule pack.

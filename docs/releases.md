@@ -58,8 +58,10 @@ OIDC credentials. A configured token takes precedence; there is no fallback afte
 2. Check dependency resolution with `cargo check --manifest-path rust/Cargo.toml` and
    `cargo check --manifest-path examples/rust/Cargo.toml`. Cargo lockfiles are ignored;
    fresh checkouts resolve the latest versions allowed by each manifest.
-3. Commit the changes and run the Release workflow manually to validate and build artifacts.
-4. Push the matching version tag when ready to publish. For the next alpha, first set
+3. Review the IL specification pinned in `tests/ildevice.ref`. Choose a minor or patch version
+   according to the [versioning policy](../README.md#versioning-and-the-il-specification).
+4. Commit the changes and run the Release workflow manually to validate and build artifacts.
+5. Push the matching version tag when ready to publish. For the next alpha, first set
    Cargo to `0.1.0-alpha.2`, then:
 
 ```sh
