@@ -78,15 +78,15 @@ and verified crate packaging. The workflow stores Python distributions and the `
 as artifacts. The two registries publish independently; if one succeeds and the other fails,
 rerun only the failed publisher job. Already published versions cannot be overwritten.
 
-## Installing the alpha
+## Installing the release candidate
 
 ```sh
-pip install 'tuya-interpreter==0.1.0a4'
+pip install 'tuya-interpreter==0.1.0rc1'
 ```
 
 ```toml
 [dependencies]
-tuya-interpreter = "=0.1.0-alpha.4"
+tuya-interpreter = "=0.1.0-rc.1"
 ```
 
 Python imports and Rust crate references use `tuya_interpreter`.
