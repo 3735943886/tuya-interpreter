@@ -60,6 +60,7 @@ enum Live {
     View,
     Snapshot,
     CarryHandle,
+    SameConfig,
     Close,
 }
 #[derive(Deserialize)]
@@ -218,6 +219,14 @@ fn live(op: Live, input: &V) -> Result<V, EngineError> {
         }
         return Ok(json!(true));
     }
+    if let Live::SameConfig = op {
+        let (other_handle, other) = opened(input, "other")?;
+        if other_handle == handle {
+            return Ok(json!(true));
+        }
+        let other = lock(&other)?.clone();
+        return Ok(json!(lock(&driver)?.same_config(&other)));
+    }
     let mut d = lock(&driver)?;
     Ok(match op {
         Live::Drive => {
@@ -234,7 +243,7 @@ fn live(op: Live, input: &V) -> Result<V, EngineError> {
             result
         }
         Live::Snapshot => d.snapshot(),
-        Live::CarryHandle | Live::Close => unreachable!("handled above"),
+        Live::CarryHandle | Live::SameConfig | Live::Close => unreachable!("handled above"),
     })
 }
 fn plain(op: Plain, input: &V) -> Result<V, EngineError> {

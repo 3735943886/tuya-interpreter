@@ -66,6 +66,11 @@ class TuyaDriver:
     def carry(self, old: TuyaDriver) -> None:
         _call({"op": "carry_handle", "handle": self._handle, "old": old._handle})
 
+    def same_config(self, other: TuyaDriver) -> bool:
+        """Whether `other` interprets the device as this driver does (rules, overrides, descriptor, delta and cover
+        settings), so a host reloading its configuration may keep this driver instead of replacing it."""
+        return _call({"op": "same_config", "handle": self._handle, "other": other._handle})
+
     def settings_block(self) -> dict:
         return self.call("settings", driver=self.state)
 

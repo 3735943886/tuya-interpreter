@@ -32,6 +32,9 @@ assert.throws(() => engine.call({ op: "handle", rules_id: "other", driver: plug.
 assert.equal(engine.remove("other"), true);
 assert.equal(plug.linked, true);
 assert.equal(plug.state.values.switch_1, true);
+const fresh = new Driver(engine, rules, device, { dpmap: { 1: "switch_1" } });
+assert.equal(plug.sameConfig(fresh), true);            // configuration, not runtime state
+assert.equal(fresh.close(), true);
 assert.equal(plug.close(), true);
 assert.throws(() => plug.handle(5, { type: "connected" }), /no open driver/);
 assert.equal(engine.remove("other"), false);

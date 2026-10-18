@@ -274,8 +274,10 @@ contract before conversion and rejected with `Reject` when invalid. Brightness c
 introduce quantization. Covers use the device's position direction, configurable through cover settings;
 garage/gate controls are read-only unless `allow_hazardous=True`.
 
-Changing rules or overrides requires a replacement driver. `new.carry(old)` preserves compatible
-delta totals; the host then seeds its current snapshot and replaces the descriptor.
+Changing rules or overrides requires a replacement driver. `old.same_config(new)` tells whether the
+replacement differs at all (rules, overrides, descriptor, delta and cover settings), so a reload can keep
+unchanged drivers. `new.carry(old)` preserves compatible delta totals; the host then seeds its current
+snapshot and replaces the descriptor.
 With `device_settings=True`, setting writes return `SettingsChanged` for the host to save and reload.
 
 ## Rust, C ABI and WebAssembly

@@ -200,7 +200,7 @@ options do not break existing callers. `RuleComposition` fields remain readable.
 Device schemas, descriptors and rule expressions remain JSON so a new declarative platform needs no Rust type change.
 
 `Driver::descriptor`, `values`, `dps`, `linked`, `synced`, `timers`, `settings_block` and `carry` expose the host-facing
-state. `merge_rules(Some(&pack), layers, tolerant)` returns a validated `RuleComposition` with its pack, sources and
+state. `same_config` tells whether two drivers interpret a device identically, so a reload can keep unchanged drivers. `merge_rules(Some(&pack), layers, tolerant)` returns a validated `RuleComposition` with its pack, sources and
 warnings. `snapshot` / `restore` transfer version-specific state using the same ordered rule fingerprint; malformed
 state or a different pack is rejected. Snapshots remain opaque, nondurable data.
 
@@ -245,6 +245,7 @@ Existing drivers still verify the content fingerprint if the ID is reinstalled.
 | `view` | `handle` | `{descriptor, dps, linked, synced, timers}` |
 | `snapshot` | `handle` | driver state, as `create` returns it |
 | `carry_handle` | `handle`, `old` (a handle) | `true`; compatible delta totals are taken over |
+| `same_config` | `handle`, `other` (a handle) | whether both use the same rules, overrides, descriptor, delta and cover settings |
 | `close` | `handle` | whether the driver was open |
 | `create` | `device`, `options` | `{driver}` |
 | `handle` | `driver`, `input`, `now` | `{driver, outputs}` |
@@ -278,7 +279,7 @@ there are no MQTT topics, payload encoders, producer actions, or bridge orchestr
 The host also owns the device registry, clocks, timers, rule files, settings storage and transport adapters.
 
 [`bindings/js/engine.mjs`](../bindings/js/engine.mjs) provides `Driver.handle(now, input)`,
-`describe(now, seed)`, `carry(old)`, `settingsBlock()` and `close()` over WebAssembly, without reading a clock.
+`describe(now, seed)`, `carry(old)`, `sameConfig(other)`, `settingsBlock()` and `close()` over WebAssembly, without reading a clock.
 `node bindings/js/smoke.mjs` verifies both directions using host-loaded rules and explicit time.
 
 ## Build, packaging and validation

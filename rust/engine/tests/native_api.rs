@@ -230,6 +230,17 @@ fn engine_held_drivers_keep_state_between_requests() {
         call(json!({"op":"carry_handle","handle":other,"old":handle}))["value"],
         true
     );
+    // Configuration, not runtime state: the driven driver and a fresh one are the same.
+    for (a, b) in [(handle, other), (other, handle), (handle, handle)] {
+        assert_eq!(
+            call(json!({"op":"same_config","handle":a,"other":b}))["value"],
+            true
+        );
+    }
+    assert_eq!(
+        call(json!({"op":"same_config","handle":handle,"other":"x"}))["ok"],
+        false
+    );
     assert_eq!(
         call(json!({"op":"carry_handle","handle":handle,"old":handle}))["value"],
         true

@@ -395,3 +395,18 @@ def test_malformed_device_tables_are_rejected(table):
     with pytest.raises(ValueError, match=f"device {table} must be an object"):
         TuyaDriver({**light(), table: []}, rules=rules())
     TuyaDriver({**light(), table: None}, rules=rules())     # absent is allowed
+
+
+def test_same_config_compares_configuration_not_runtime_state():
+    a = TuyaDriver(curtain(), rules=rules())
+    b = TuyaDriver(curtain(), rules=rules())
+    a.handle(0, Connected())
+    a.handle(1, Message("state", {"2": 40, "3": 40}))
+    assert a.same_config(b) and b.same_config(a) and a.same_config(a)      # values, link and timers are runtime state
+    inverted = TuyaDriver(curtain(), overrides={"p": {"cover": {"invert_position": True}}}, rules=rules())
+    assert not a.same_config(inverted)                                    # a cover setting, same descriptor
+    labelled = TuyaDriver(curtain(), overrides={"p": {"device": {"label": "Bedroom"}}}, rules=rules())
+    assert not a.same_config(labelled)
+    other_rules = rules()
+    other_rules["overrides"] = {**other_rules.get("overrides", {}), "unused-product": {"device": {"model": "x"}}}
+    assert not a.same_config(TuyaDriver(curtain(), rules=other_rules))   # a different rule pack

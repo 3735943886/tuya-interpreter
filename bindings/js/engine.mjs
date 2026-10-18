@@ -104,6 +104,11 @@ export class Driver {
     this.engine.call({ op: "carry_handle", handle: this.handleId, old: old.handleId });
   }
 
+  /** Whether `other` interprets the device as this driver does, so a reload may keep this driver. */
+  sameConfig(other) {
+    return this.engine.call({ op: "same_config", handle: this.handleId, other: other.handleId });
+  }
+
   settingsBlock() {
     return this.engine.call({ op: "settings", rules_id: this.rulesId, driver: this.state });
   }

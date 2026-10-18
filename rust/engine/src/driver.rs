@@ -206,6 +206,20 @@ impl Driver {
             rules_fingerprint: String::new(),
         })
     }
+    /// Whether `other` interprets the device as this driver does: the same rules, override block, descriptor,
+    /// delta settings and cover settings. Runtime state (values, link, timers, totals) is not compared.
+    pub fn same_config(&self, other: &Driver) -> bool {
+        self.rules_fingerprint == other.rules_fingerprint
+            && self.config.block == other.config.block
+            && self.delta == other.delta
+            && self.assembly.descriptor == other.assembly.descriptor
+            && self.covers.len() == other.covers.len()
+            && self
+                .covers
+                .iter()
+                .zip(&other.covers)
+                .all(|(a, b)| a.settings == b.settings)
+    }
     /// Take over what `old` counted: delta totals of the same DPs, and the message sequence.
     pub fn carry(&mut self, old: &Driver) {
         self.seq = self.seq.max(old.seq);

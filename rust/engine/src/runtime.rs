@@ -218,6 +218,10 @@ impl Driver {
     pub fn carry(&mut self, old: &Self) {
         self.state.carry(&old.state);
     }
+    /// Whether `other` has the same configuration, so a host may keep this driver instead of replacing it.
+    pub fn same_config(&self, other: &Self) -> bool {
+        self.state.same_config(&other.state)
+    }
     /// Version-specific state for migration across processes, not a durable storage format.
     pub fn snapshot(&self) -> Value {
         json!(self.state)
