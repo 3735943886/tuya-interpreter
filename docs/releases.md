@@ -1,82 +1,59 @@
 # Publishing tuya-interpreter
 
-One tag publishes the Rust crate and Python distributions under the same name,
-`tuya-interpreter`. The first published release is:
+A pushed `interpreter-v<SemVer>` tag publishes the Rust crate and Python distributions
+under the name `tuya-interpreter`. For the first stable release:
 
 | Item | Version |
 | --- | --- |
-| Git tag | `v0.1.0-alpha.1` |
-| crates.io | `0.1.0-alpha.1` |
-| PyPI | `0.1.0a1` |
+| Git tag | `interpreter-v0.1.0` |
+| crates.io | `0.1.0` |
+| PyPI | `0.1.0` |
 
-Cargo uses SemVer prereleases; Python uses PEP 440. `scripts/release_version.py`
-validates the Cargo version and exact tag, then supplies the corresponding Python version
-explicitly to all release builds. This avoids inheriting the old project's `0.4.*` tags.
-Alpha, beta and release-candidate tags use `-alpha.N`, `-beta.N` and `-rc.N` respectively.
-Future tags use `interpreter-v<SemVer>`, such as `interpreter-v0.1.0-alpha.2`
-or `interpreter-v0.4.0`. Stable tags use `interpreter-vX.Y.Z`. Existing `v*` tags are
-preserved and do not trigger new releases. SCM selects the new namespace, with exactly
-`v0.1.0-alpha.1` retained as the already published baseline.
+Cargo uses SemVer; Python uses PEP 440. Prereleases use `-alpha.N`, `-beta.N` or `-rc.N`
+in Cargo and the tag, mapped to `aN`, `bN` or `rcN` in Python.
+`scripts/release_version.py` validates the exact tag against Cargo and supplies the
+Python version to every release build.
 
-## One-time registry configuration
+## Registry configuration
 
-### PyPI
+Both registries use the repository `3735943886/tuya-interpreter` and workflow `release.yml`.
 
-Create a pending Trusted Publisher for the new project if it has not been registered:
+| Registry | GitHub environment | Authentication |
+| --- | --- | --- |
+| PyPI | `pypi` | Trusted Publishing through OIDC |
+| crates.io | `crates-io` | Trusted Publishing through OIDC, or `CARGO_REGISTRY_TOKEN` |
 
-- Project: `tuya-interpreter`
-- Owner: `3735943886`
-- Repository: `tuya-interpreter`
-- Workflow: `release.yml`
-- GitHub environment: `pypi`
-
-The workflow uses OIDC through `pypa/gh-action-pypi-publish`; it does not require a PyPI API token.
-Configure the matching publisher at [PyPI Publishing](https://pypi.org/manage/account/publishing/).
-
-### crates.io
-
-The first registration requires an API token because Trusted Publishing currently requires
-an already published crate. See [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing).
-
-Create a crates.io API token with permission to publish the new crate, and store it as
-`CARGO_REGISTRY_TOKEN` in the GitHub `crates-io` environment or repository secrets.
-Create the `crates-io` GitHub environment as needed. The first tagged run uses this token.
-
-After the initial release, configure the crate's Trusted Publisher with:
-
-- Owner: `3735943886`
-- Repository: `tuya-interpreter`
-- Workflow: `release.yml`
-- GitHub environment: `crates-io`
-
-Then remove the GitHub token secret to use `rust-lang/crates-io-auth-action` and short-lived
-OIDC credentials. A configured token takes precedence; there is no fallback after an OIDC failure.
+Configure the matching publisher in each registry. A configured Cargo token takes
+precedence over OIDC; authentication failures do not fall back to another method.
 
 ## Preparing a release
 
-1. Set `rust/engine/Cargo.toml` to the intended SemVer version.
+1. Set `rust/engine/Cargo.toml` to the intended SemVer version and update installation examples.
 2. Check dependency resolution with `cargo check --manifest-path rust/Cargo.toml` and
    `cargo check --manifest-path examples/rust/Cargo.toml`. Cargo lockfiles are ignored;
-   fresh checkouts resolve the latest versions allowed by each manifest.
-3. Review the IL specification pinned in `tests/ildevice.ref`. Choose a minor or patch version
-   according to the [versioning policy](../README.md#versioning-and-the-il-specification).
-4. Commit the changes and run the Release workflow manually to validate and build artifacts.
-5. Push the matching version tag when ready to publish. For the next alpha, first set
-   Cargo to `0.1.0-alpha.2`, then:
+   fresh checkouts resolve the versions allowed by each manifest.
+3. Review the IL specification pinned in `tests/ildevice.ref` and follow the
+   [versioning policy](../README.md#versioning-and-the-il-specification).
+4. Review public documentation and package contents. Retain third-party notices and
+   exclude local credentials, agent notes, caches and build outputs.
+5. Commit the changes. Verify CI and run the Release workflow manually on that commit
+   to validate all artifacts without publishing.
+6. Push the matching tag. For `0.1.0`:
 
 ```sh
-git tag interpreter-v0.1.0-alpha.2
-git push origin interpreter-v0.1.0-alpha.2
+python scripts/release_version.py --tag interpreter-v0.1.0
+git tag interpreter-v0.1.0
+git push origin interpreter-v0.1.0
 ```
 
-PR and manual runs build the candidate version from Cargo without publishing.
-Even a manual run on a tag does not publish. Only a pushed version tag triggers the publisher jobs.
-Malformed tags or a tag that differs from Cargo fail before build/publish.
+Only pushed version tags publish. Pull requests and manual runs build and test without
+publishing. A malformed tag or a tag that differs from Cargo fails before publication.
+Existing tags must not be deleted, renamed or overwritten.
 
-Both publisher jobs wait for the full test job, all 13 Python wheel builds, the source archive
-and verified crate packaging. The workflow stores Python distributions and the `.crate` file
-as artifacts. The two registries publish independently; if one succeeds and the other fails,
-rerun only the failed publisher job. Already published versions cannot be overwritten.
+Both publisher jobs wait for the full test job, all 13 Python wheel builds, the source
+archive and verified crate packaging. The workflow stores Python distributions and the
+`.crate` file as artifacts. The registries publish independently; if one succeeds and the
+other fails, rerun only the failed publisher job. Published versions cannot be overwritten.
 
 ## Installing the stable release
 

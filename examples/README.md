@@ -20,8 +20,8 @@ Two fictional device profiles have different DP layouts and temperature scales:
 | [A](devices/device-a.json) | DP 1, Boolean | DP 2, `235`, scale 1 | `switch_1`, `temp_current = 23.5 °C` |
 | [B](devices/device-b.json) | DP 101, Boolean | DP 102, `2350`, scale 2 | `switch_1`, `temp_current = 23.5 °C` |
 
-These are illustrative virtual devices derived from the earlier anonymized schema shape,
-not claims about the capabilities of the real r5c device. No real IDs or credentials are used.
+These fictional profiles demonstrate schema-driven interpretation. Their IDs and metadata
+are sample values.
 A shared [rule layer](devices/rules.json) adds temperature classification to the fictional
 switch category. The host explicitly merges it with the official pack; no core changes are needed.
 
@@ -63,13 +63,11 @@ the interpreter rather than reproducing Tuya schema logic.
 This example polls on demand. It does not run background timers, persist settings or subscribe
 to unsolicited pushes; those remain host responsibilities in a full application.
 
-## Anonymized device JSON
+## Sample device JSON
 
-[toggle-switch.json](devices/toggle-switch.json) is a fictional single-channel toggle switch based on
-the shape of a real tuyawizard export inspected on r5c. It preserves the `kg` category,
-Boolean `switch_1` definition and DP 1 mapping. Other features were removed; names and IDs
-were replaced. Local keys, IP addresses, owner/account IDs, coordinates, UUIDs, timestamps
-and product-specific metadata are omitted. It cannot authenticate to a real device.
+[toggle-switch.json](devices/toggle-switch.json) describes a fictional single-channel switch
+with category `kg`, a Boolean `switch_1` feature and DP 1 mapping. It follows the device
+export structure described in the main README and contains no real device credentials.
 
 ## Protocol-level virtual device with tuyamock
 
@@ -82,7 +80,7 @@ python examples/python/toggle_cli.py --mock
 
 This starts a [tuyamock](https://github.com/3735943886/tuyamock) switch on `127.0.0.1`
 at an OS-assigned TCP port, and connects with a real TinyTuya client using Tuya protocol 3.5.
-It uses the anonymized schema and a public test key. Commands pass through the real interpreter,
+It uses the sample schema and a public test key. Commands pass through the real interpreter,
 then through TinyTuya's encrypted TCP transport, and change the mock device's actual DPS state.
 The mock stops when the CLI exits. No physical device or private credentials are needed.
 

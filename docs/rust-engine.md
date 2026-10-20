@@ -306,25 +306,23 @@ and macOS build for an explicit Rust target so the library matches the wheel.
 Each installed wheel runs the native driver and rule-composition tests; the separate
 source test job runs the full suite. A source distribution is built once.
 
-Push a version tag such as `v0.4.0` to build, test and publish all artifacts to PyPI
-using the `pypi` Trusted Publishing environment. Pull requests affecting the
-release inputs and `workflow_dispatch` build and test without publishing.
-PyPI's Trusted Publisher must reference this repository, `release.yml` and the
-`pypi` environment. No release tag is created by the workflow.
+Release tags use `interpreter-v<SemVer>`, for example `interpreter-v0.1.0`.
+The release workflow tests and publishes the Rust crate and Python distributions.
+See [publishing](releases.md) for version validation, registry configuration and the release procedure.
 
-`hatch_version.py` derives versions from Git via setuptools-scm. An exact tag keeps its version;
-commits after `v0.4.0.dev1` advance its development number (`+3` commits gives `0.4.0.dev4`).
-Commits after a final release use the next patch development version. Source archives retain their
-recorded version through `PKG-INFO`, so building a wheel from an sdist does not require Git metadata.
+`hatch_version.py` derives Python versions from Git via setuptools-scm. An exact release tag
+keeps its version; commits after a stable release use the next patch development version.
+Source archives retain their recorded version through `PKG-INFO`, so building a wheel from
+an sdist does not require Git metadata.
 
 `TUYA_ENGINE_BUNDLED_LIBRARY` lets the build hook package a prebuilt library
 (relative paths resolve against the project root). Without it Cargo builds the
 library; `TUYA_ENGINE_TARGET` or `CARGO_BUILD_TARGET` selects an explicit target. Local Linux wheels
 are tagged for their local platform; manylinux repair happens in release CI.
 
-Existing HA core/quirk/action golden tests exercise the Rust-backed APIs. In addition,
+HA core, quirk and action golden tests exercise the Rust-backed APIs. In addition,
 `rust/engine/tests/driver_vectors.json` holds 324 complete driver traces / 3,421 steps,
-frozen from an earlier reference implementation, covering descriptors, snapshots,
+covering descriptors, snapshots,
 active/passive packets, writes, disconnect and reconnect. The Rust test runner consumes
 them without Python; the adapter tests compare Rust with Tuya SDK 0.2.15. Do not
 rewrite expected data to conceal a failing test: for new intended behavior, review the
@@ -335,4 +333,4 @@ transaction rollback, partial override composition, malformed declarations and a
 in-memory calls with JSON transport, run `cargo run --release --manifest-path rust/Cargo.toml --example
 benchmark -- 5000`. `scripts/benchmark_abi.py <library> 2000` compares shared-library revisions with the same Python
 and ctypes transport. Measurements exclude driver construction and use five rounds of alternating DP pushes.
-See [local performance measurements](performance.md) for the recorded baseline comparison and API timings.
+See [local performance measurements](performance.md) for benchmark conditions and API timings.

@@ -7,8 +7,7 @@ See the [README](../README.md) for the input device JSON and host contract.
 
 Tuya devices are fragmented: a cloud schema can give a dp a non-standard code, leave a dp out, speak other words
 (`on`/`off`/`pause` instead of `open`/`close`/`stop`) or run a position the other way. Overrides fix that in Tuya's own
-terms, before classification, so the fixed device goes through the same tables as any other and every IL consumer
-(il-ha, a discovery publisher, ...) sees the fix.
+terms, before classification, so the fixed device goes through the same tables as any other and every ildevice consumer sees the fix.
 
 `TuyaDriver(device, rules=rules, overrides=mapping)`; `mapping` is `{product_id or device id: block}`,
 already loaded (`merge_all([...])` merges several, later wins). File discovery and loading belong to the host.
@@ -86,7 +85,7 @@ control*. The switches are `binary`, the state source is `select`; all are `rw`,
 named by its group (`control_2_cover_invert_position`).
 
 Writing a switch sends nothing to the device: the driver answers with the value and `SettingsChanged(block)`, with the device's whole settings block (e.g. `{"cover": {"invert_position":
-true}}`) for the host to keep (rustuya-local keeps it in `zz_settings.json` in its rules directory and reloads).
+true}}`) for the host to persist and use when constructing a replacement driver.
 
 The same settings are a `cover` block in any override file, where a product's block is the starting point for its
 devices and a device's (the switches write the device's) wins:

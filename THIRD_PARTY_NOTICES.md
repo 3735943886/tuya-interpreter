@@ -4,13 +4,14 @@
 
 The rule pack (`rules/builtin/00-default.json`) and the engine (`rust/engine/`) are a sans-I/O, data-driven reproduction of
 [home-assistant/core](https://github.com/home-assistant/core)'s official `tuya` integration (Apache-2.0) and of
-[tuya-device-handlers](https://github.com/make-all/tuya-local) (Apache-2.0). The pack's category/platform tables
+[tuya-device-handlers](https://github.com/home-assistant-libs/tuya-device-handlers) (Apache-2.0). The pack's category/platform tables
 (`platforms`) and quirk registry (`quirks`) are *generated* from those sources by `scripts/gen_core_tables.py` and
 `scripts/gen_quirks.py` against a pinned checkout of each and folded in by `scripts/build_rules.py`, not hand-copied;
 the entity specs (`entities`) are hand-authored but reviewed against tuya-device-handlers' `definition/*.py`. Behaviour is
 pinned by the golden tests in `scripts/golden/` (built from core's own test fixtures and snapshots).
 
-Same author as this project (MIT); the generated data derived from Apache-2.0 sources keeps that notice.
+This project is licensed under MIT. Data and fixtures derived from Apache-2.0 sources retain
+their upstream attribution and license obligations.
 
 ## tuya-device-sharing-sdk
 

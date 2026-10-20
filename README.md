@@ -210,7 +210,7 @@ The interpreter applies each schema's mapping and scale and rejects writes to th
 Run from a source checkout with the interpreter installed. Use `--memory` for a demo without
 network dependencies. See [the example guide](examples/README.md#same-application-different-devices)
 for the profiles and [Rust/rustuya version](examples/README.md#rust-use-the-same-two-device-profiles).
-The original [minimal toggle CLI](examples/python/toggle_cli.py) remains available for connection checks
+The [minimal toggle CLI](examples/python/toggle_cli.py) remains available for connection checks
 and real-device use with private metadata.
 
 ## Rules and supported device functions

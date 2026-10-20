@@ -22,7 +22,7 @@ outputs.
 ## Direct Rust calls
 
 `cargo run --release --manifest-path rust/Cargo.toml --example benchmark -- 5000`
-compares the updated typed in-memory API with the updated JSON API in the same Rust
+compares the typed in-memory API with the explicit-state JSON API in the same Rust
 process. JSON calls serialize and restore the complete driver snapshot on each message;
 native calls retain the driver in memory. These results measure the total API path,
 including that transport difference.

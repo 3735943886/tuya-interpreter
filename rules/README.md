@@ -3,8 +3,7 @@
 Official rules live together in `builtin/`: `00-default.json`, any additional official layers,
 and `manifest.json`. All of them ship with the wheel. The top level of a host's `rules/` directory
 is for user layers. Hosts load official layers in filename order, then user layers.
-The library does not discover directories. Hosts migrating from the old layout must update
-the bundled default path and remote manifest URL.
+The library does not discover directories.
 
 `builtin/00-default.json` ships with the package and wheel. It holds every piece of device interpretation: the platform
 tables (`platforms`), one entity spec per platform (`entities`: roles and their DP candidates, plan variants, state,
@@ -68,7 +67,8 @@ If a separate file is easier to maintain, put it alongside the defaults, for exa
 - After adding, changing or removing a rule file, run `python scripts/build_pack.py` to update
   `builtin/manifest.json`. The manifest lists every official layer, including the defaults, with its SHA-256.
 - Manifest entries use `requires` / `until` to bound the host's compatible `LEVEL`.
-  New entries default to `requires: 4`, the rule-layer format used by tuya_interpreter 0.4.
+  New entries default to `requires: 4`. This is a host rule-loader compatibility level,
+  independent of the package version.
 
 A host can also fetch the manifest and layers from `master` to update official rules between releases.
 It should keep fetched layers under `rules/builtin/` and apply user layers afterward.
