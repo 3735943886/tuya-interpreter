@@ -36,8 +36,8 @@ precedence over OIDC; authentication failures do not fall back to another method
    [versioning policy](../README.md#versioning-and-the-il-specification).
 4. Review public documentation and package contents. Retain third-party notices and
    exclude local credentials, agent notes, caches and build outputs.
-5. Commit the changes. Verify CI and run the Release workflow manually on that commit
-   to validate all artifacts without publishing.
+5. Commit the changes. Verify CI and run the Release workflow manually on the default
+   branch containing that commit to validate all artifacts without publishing.
 6. Push the matching tag. For `0.1.0`:
 
 ```sh
